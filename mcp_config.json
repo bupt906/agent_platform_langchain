@@ -1,0 +1,15 @@
+{
+  "mcpServers": {
+    "filesystem": {
+      "command": "mcp-server-filesystem",
+      "args": ["/tmp"],
+      "tool_prefix": "fs_",
+      "enabled": false
+    },
+    "database": {
+      "url": "http://localhost:3001/sse",
+      "tool_prefix": "db_",
+      "enabled": false
+    }
+  }
+}
