@@ -37,8 +37,12 @@ async def query_table_schema(table_name: str) -> str:
 @tool
 async def run_sql_query(sql: str) -> str:
     """执行 SQL 查询语句。只允许 SELECT 查询。"""
-    if not sql.strip().upper().startswith("SELECT"):
-        return "错误：只允许执行 SELECT 查询"
+    import re
+
+    cleaned = re.sub(r"(--[^\n]*|/\*.*?\*/)", "", sql, flags=re.DOTALL).strip()
+    first_word = cleaned.upper().split()[0] if cleaned.split() else ""
+    if first_word != "SELECT":
+        return f"错误：只允许执行 SELECT 查询"
     rows = await execute_sql(sql)
     if not rows:
         return "查询无结果"
@@ -67,10 +71,10 @@ class DataQuerySkill(BaseSkill):
             "查询订单状态分布",
         ]
 
-    def create_agent(self, model_provider: ModelProvider) -> CompiledStateGraph:
+    def create_agent(self, model_provider: ModelProvider, checkpointer=None) -> CompiledStateGraph:
         model = model_provider.get_model()
         return create_agent(
-            model, [query_table_schema, run_sql_query], system_prompt=SYSTEM_PROMPT
+            model, [query_table_schema, run_sql_query], system_prompt=SYSTEM_PROMPT, checkpointer=checkpointer
         )
 
 

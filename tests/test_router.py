@@ -4,7 +4,12 @@ import pytest
 from pydantic import ValidationError
 
 from agent_platform.core.registry import SkillRegistry
-from agent_platform.core.router import RouterDecision
+from agent_platform.core.router import (
+    RouterDecision,
+    _build_invoke_config,
+    _build_router_prompt,
+    resolve_route,
+)
 
 
 class TestRouterDecision:
@@ -48,3 +53,31 @@ class TestRouterSkillDiscovery:
             assert len(skill.dependencies) > 0
             assert "data_query" in skill.dependencies
             assert "contract_review" in skill.dependencies
+
+
+class TestBuildRouterPrompt:
+    @pytest.mark.asyncio
+    async def test_prompt_includes_all_skills(self, deps):
+        prompt = _build_router_prompt(deps)
+        assert "qa" in prompt
+        assert "data_query" in prompt
+        assert "contract_review" in prompt
+
+    @pytest.mark.asyncio
+    async def test_prompt_includes_routing_rules(self, deps):
+        prompt = _build_router_prompt(deps)
+        assert "single" in prompt
+        assert "multi" in prompt
+        assert "sequential" in prompt
+        assert "parallel" in prompt
+        assert "orchestrator" in prompt
+
+
+class TestInvokeConfig:
+    def test_no_session_id_returns_empty_dict(self):
+        assert _build_invoke_config(None) == {}
+
+    def test_with_session_id_includes_thread_id(self):
+        cfg = _build_invoke_config("session-123")
+        assert "configurable" in cfg
+        assert cfg["configurable"]["thread_id"] == "session-123"

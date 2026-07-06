@@ -8,7 +8,7 @@ from agent_platform.skills.contract_review.tools import (
     check_clause,
     parse_contract,
 )
-from agent_platform.skills.data_query.tools import execute_sql, get_table_schema
+from agent_platform.skills.data_query.tools import execute_sql, get_table_schema, _validate_sql
 from agent_platform.skills.qa.tools import knowledge_search
 
 
@@ -34,6 +34,28 @@ class TestSkillRegistry:
             assert s.name
             assert s.description
 
+    def test_get_all_skills_returns_dict(self, skill_registry: SkillRegistry):
+        all_skills = skill_registry.get_all_skills()
+        assert isinstance(all_skills, dict)
+        assert len(all_skills) >= 3
+        assert "qa" in all_skills
+        assert all_skills["qa"].name == "qa"
+
+    def test_create_agent_with_checkpointer(self, skill_registry: SkillRegistry, model_provider):
+        """验证 create_agent 接受 checkpointer 参数。"""
+        from langgraph.checkpoint.memory import InMemorySaver
+
+        skill = skill_registry.get("qa")
+        agent = skill.create_agent(model_provider, checkpointer=InMemorySaver())
+        # 不抛异常即为通过（不执行 LLM 调用）
+        assert agent is not None
+
+    def test_create_agent_without_checkpointer(self, skill_registry: SkillRegistry, model_provider):
+        """验证 create_agent 不带 checkpointer 也能工作。"""
+        skill = skill_registry.get("qa")
+        agent = skill.create_agent(model_provider, checkpointer=None)
+        assert agent is not None
+
 
 class TestQATools:
     @pytest.mark.asyncio
@@ -56,6 +78,41 @@ class TestDataQueryTools:
         rows = await execute_sql("SELECT * FROM users")
         assert len(rows) > 0
         assert isinstance(rows[0], dict)
+
+    @pytest.mark.asyncio
+    async def test_execute_sql_rejects_non_select(self):
+        rows = await execute_sql("INSERT INTO users VALUES (1, 'test')")
+        assert len(rows) == 1
+        assert "error" in rows[0]
+
+    @pytest.mark.asyncio
+    async def test_execute_sql_rejects_multi_statement(self):
+        rows = await execute_sql("SELECT * FROM users; DROP TABLE users;")
+        assert len(rows) == 1
+        assert "error" in rows[0]
+
+    @pytest.mark.asyncio
+    async def test_execute_sql_rejects_multi_statement_with_comment(self):
+        """DROP TABLE 不在注释中，而是作为第二条语句"""
+        rows = await execute_sql("SELECT * FROM users; DROP TABLE users;-- comment")
+        assert len(rows) == 1
+        assert "error" in rows[0]
+
+    @pytest.mark.asyncio
+    async def test_execute_sql_allows_select_with_trailing_comment(self):
+        """尾部注释不影响合法 SELECT"""
+        rows = await execute_sql("SELECT * FROM users -- this is a comment")
+        assert len(rows) > 0
+        assert "error" not in rows[0]
+
+    @pytest.mark.asyncio
+    async def test_sql_validation_allows_valid_select(self):
+        assert _validate_sql("SELECT * FROM users") is None
+        assert _validate_sql("  SELECT id, name FROM orders  ") is None
+
+    @pytest.mark.asyncio
+    async def test_sql_validation_rejects_insert(self):
+        assert _validate_sql("INSERT INTO users VALUES (1)") is not None
 
     @pytest.mark.asyncio
     async def test_get_table_schema_known_table(self):

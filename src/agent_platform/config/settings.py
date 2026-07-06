@@ -27,6 +27,17 @@ class Settings(BaseSettings):
     log_level: str = "INFO"
     api_host: str = "0.0.0.0"
     api_port: int = 8000
+
+    # 可靠性配置
+    request_timeout: int = 120  # 模型请求超时（秒）
+    max_retries: int = 2  # 模型请求失败重试次数
+
+    # 安全配置
+    api_key: str = ""  # API 认证密钥，为空则不启用认证
+
+    # 限流配置
+    rate_limit_per_minute: int = 60  # 每 IP 每分钟最大请求数
+
     models: ModelConfig = Field(default_factory=ModelConfig)
 
     model_config = {"env_file": ".env", "extra": "ignore"}

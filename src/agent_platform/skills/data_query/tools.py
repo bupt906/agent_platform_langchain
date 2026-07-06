@@ -32,11 +32,42 @@ _SCHEMAS: dict[str, str] = {
 }
 
 
+def _validate_sql(sql: str) -> str | None:
+    """校验 SQL 语句安全性。只允许单条 SELECT 查询。
+
+    Returns:
+        错误信息字符串，None 表示通过校验。
+    """
+    import re
+
+    cleaned = sql.strip()
+
+    # 移除单行注释
+    cleaned = re.sub(r"--[^\n]*", "", cleaned)
+    # 移除块注释
+    cleaned = re.sub(r"/\*.*?\*/", "", cleaned, flags=re.DOTALL)
+
+    # 检查多语句（分号前有实际内容）
+    parts = [p.strip() for p in cleaned.split(";") if p.strip()]
+    if len(parts) > 1:
+        return "错误：不允许执行多条 SQL 语句"
+
+    first_word = cleaned.strip().upper().split()[0] if cleaned.strip().split() else ""
+    if first_word != "SELECT":
+        return f"错误：只允许执行 SELECT 查询，收到: {first_word}"
+
+    return None
+
+
 async def execute_sql(sql: str) -> list[dict[str, str]]:
     """执行 SQL 查询并返回结果行。
 
     TODO: 接入真实数据库连接池。
     """
+    err = _validate_sql(sql)
+    if err:
+        return [{"error": err}]
+
     return [
         {"id": "1", "name": "示例数据", "value": "100"},
         {"id": "2", "name": "示例数据2", "value": "200"},

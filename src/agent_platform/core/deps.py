@@ -1,8 +1,9 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 import httpx
+from langgraph.checkpoint.memory import InMemorySaver
 
 from agent_platform.core.registry import SkillRegistry
 from agent_platform.models.provider import ModelProvider
@@ -15,3 +16,4 @@ class PlatformDeps:
     model_provider: ModelProvider
     skill_registry: SkillRegistry
     http_client: httpx.AsyncClient
+    checkpointer: InMemorySaver = field(default_factory=InMemorySaver)

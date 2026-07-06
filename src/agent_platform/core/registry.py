@@ -29,6 +29,13 @@ class SkillRegistry:
     def skill_names(self) -> list[str]:
         return list(self._skills.keys())
 
+    def get_all_skills(self) -> dict[str, BaseSkill]:
+        """返回已注册的全部技能，key 为技能名，value 为技能实例。
+
+        用于 compose() 调用时传入完整技能表。
+        """
+        return dict(self._skills)
+
     def auto_discover(self, package_name: str = "agent_platform.skills") -> None:
         package = importlib.import_module(package_name)
         for importer, modname, ispkg in pkgutil.iter_modules(

@@ -47,9 +47,9 @@ class DataInformedContractReviewSkill(BaseSkill):
     def dependencies(self) -> list[str]:
         return ["data_query", "contract_review"]
 
-    def create_agent(self, model_provider: ModelProvider) -> CompiledStateGraph:
+    def create_agent(self, model_provider: ModelProvider, checkpointer=None) -> CompiledStateGraph:
         model = model_provider.get_model()
-        return build_agent(model, [], system_prompt=FALLBACK_PROMPT)
+        return build_agent(model, [], system_prompt=FALLBACK_PROMPT, checkpointer=checkpointer)
 
     def compose(
         self,
@@ -61,8 +61,8 @@ class DataInformedContractReviewSkill(BaseSkill):
         if not dq_skill or not cr_skill:
             return None
 
-        dq_agent = dq_skill.create_agent(model_provider)
-        cr_agent = cr_skill.create_agent(model_provider)
+        dq_agent = dq_skill.create_agent(model_provider, checkpointer=None)
+        cr_agent = cr_skill.create_agent(model_provider, checkpointer=None)
 
         @tool
         async def query_data(query: str) -> str:

@@ -38,6 +38,9 @@
 | 流式输出 | SSE-Starlette 3.x | Server-Sent Events 流式推送 |
 | 配置管理 | pydantic-settings 2.x | 从环境变量 / `.env` 文件自动加载配置（详见下方说明） |
 | HTTP 客户端 | httpx 0.27+ | 异步 HTTP 请求 |
+| 会话管理 | LangGraph Checkpointer (InMemorySaver) | 多轮对话状态持久化 |
+| 安全 | Bearer Token + 滑动窗口限流 | API 认证与速率限制 |
+| 可观测性 | 请求日志中间件 | 请求耗时统计 |
 
 ---
 
@@ -84,19 +87,20 @@ agent_platform_langchain/
 │   ├── mcp_servers/
 │   │   └── registry.py             # MCP Server 加载器
 │   │
-│   └── api/
-│       ├── app.py                  # FastAPI 应用入口 + lifespan
+│   ├── api/
+│       ├── app.py                  # FastAPI 应用入口 + lifespan + 中间件注册
+│       ├── middleware.py            # 认证 / 限流 / 可观测性中间件
 │       ├── schemas.py              # 请求/响应 Pydantic 模型
 │       └── routes/
 │           ├── chat.py             # /chat 和 /chat/stream 端点
 │           └── skills.py           # /skills 端点
 │
-└── tests/                          # 测试套件（32 个测试）
+└── tests/                          # 测试套件（51 个测试）
     ├── conftest.py                 # Pytest Fixtures
-    ├── test_skills.py              # 技能注册 + 工具函数测试
-    ├── test_router.py              # 路由决策 + 技能发现测试
-    ├── test_orchestration.py       # 事件序列化 + 执行计划测试
-    └── test_multi_agent_router.py  # 多 Agent 模式 + 组合技能测试
+    ├── test_skills.py              # 技能注册 + 工具函数 + SQL 注入校验测试
+    ├── test_router.py              # 路由决策 + 路由 prompt 构建 + invoke config 测试
+    ├── test_orchestration.py       # 事件序列化 + 执行计划 + sentinel 模式测试
+    └── test_multi_agent_router.py  # 多 Agent 模式 + 组合技能 compose 测试
 ```
 
 ---
@@ -178,6 +182,10 @@ curl http://localhost:8000/skills
 | `API_HOST` | `0.0.0.0` | 服务监听地址 |
 | `API_PORT` | `8000` | 服务监听端口 |
 | `LOG_LEVEL` | `INFO` | 日志级别 (DEBUG/INFO/WARNING/ERROR) |
+| `REQUEST_TIMEOUT` | `120` | 模型请求超时秒数 |
+| `MAX_RETRIES` | `2` | 模型请求失败重试次数 |
+| `API_KEY` | (空) | API 认证密钥，为空则不启用认证 |
+| `RATE_LIMIT_PER_MINUTE` | `60` | 每 IP 每分钟最大请求数，0 = 不限 |
 
 **模型 ID 格式**：`提供商:模型名`，例如：
 - `deepseek:deepseek-chat` — DeepSeek 对话模型
@@ -198,7 +206,7 @@ curl http://localhost:8000/skills
   "message": "用户问题",
   "skill": "qa",                // 可选，指定技能名称；省略则自动路由
   "model": "deepseek:deepseek-chat", // 可选，指定模型；省略使用默认模型
-  "session_id": "abc123"        // 可选，会话 ID（预留多轮对话）
+  "session_id": "abc123"        // 可选，会话 ID，用于多轮对话记忆
 }
 ```
 
@@ -293,6 +301,23 @@ data: {"type": "done", "skill": "multi_agent"}
 {"status": "ok"}
 ```
 
+### 认证
+
+配置 `API_KEY` 环境变量后，所有请求（除 `/health`）均需携带 Bearer Token：
+
+```bash
+curl -X POST http://localhost:8000/chat \
+  -H "Authorization: Bearer your-api-key" \
+  -H "Content-Type: application/json" \
+  -d '{"message": "你好"}'
+```
+
+不传或传错返回 `401 Unauthorized`。
+
+### 速率限制
+
+通过 `RATE_LIMIT_PER_MINUTE` 配置每 IP 每分钟最大请求数（默认 60）。超出限制返回 `429 Too Many Requests`。`/health` 端点不受限流影响。
+
 ---
 
 ## 内置技能详解
@@ -315,7 +340,7 @@ data: {"type": "done", "skill": "multi_agent"}
 |------|------|
 | 工具 | `query_table_schema(table_name)` — 查看表结构 |
 |      | `run_sql_query(sql)` — 执行 SELECT 查询 |
-| 安全限制 | 仅允许 SELECT，禁止 INSERT/UPDATE/DELETE |
+| 安全机制 | 多层 SQL 校验：注释移除 → 多语句检测 → SELECT 关键字白名单 |
 | 内置表 | users, orders, products |
 | 待接入 | 真实数据库连接池 |
 
@@ -530,9 +555,9 @@ class MySkill(BaseSkill):
     def examples(self) -> list[str]:
         return ["示例问题1", "示例问题2"]
 
-    def create_agent(self, model_provider):
+    def create_agent(self, model_provider, checkpointer=None):
         model = model_provider.get_model()
-        return create_agent(model, [domain_search], system_prompt=SYSTEM_PROMPT)
+        return create_agent(model, [domain_search], system_prompt=SYSTEM_PROMPT, checkpointer=checkpointer)
 
 skill = MySkill()
 ```
@@ -622,8 +647,8 @@ pytest tests/test_skills.py -v
 pytest tests/test_orchestration.py::TestEventSerialization -v
 ```
 
-测试覆盖：
-- **test_skills.py** — 技能注册中心、QA/数据查询/合同审查工具函数
-- **test_router.py** — 路由决策模型验证、技能发现
-- **test_orchestration.py** — 事件序列化、执行计划创建
-- **test_multi_agent_router.py** — 多 Agent 模式、组合技能发现
+测试覆盖（51 个用例）：
+- **test_skills.py** — 技能注册中心、`get_all_skills()`、checkpointer 集成、SQL 注入校验（8 种攻击场景）、工具函数
+- **test_router.py** — 路由决策模型验证、技能发现、`_build_router_prompt()` 输出、`_build_invoke_config()` session_id 行为
+- **test_orchestration.py** — 事件序列化、执行计划往返、顺序图结构验证、sentinel 终止模式
+- **test_multi_agent_router.py** — 多 Agent 模式、组合技能 compose 正常/退化路径、模型序列化往返

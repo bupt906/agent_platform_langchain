@@ -34,7 +34,7 @@ class OrchestrationEngine:
         *,
         event_queue: asyncio.Queue | None = None,
     ) -> str:
-        skills = {}
+        skills: dict = {}
         for st in plan.subtasks:
             skill = self._deps.skill_registry.get(st.skill_name)
             if skill:
@@ -58,8 +58,13 @@ class OrchestrationEngine:
                 plan.subtasks, skills, self._deps, plan.synthesis_prompt
             )
 
-        result = await graph.ainvoke(initial_state)
-        return result["final_result"]
+        try:
+            result = await graph.ainvoke(initial_state)
+            return result["final_result"]
+        finally:
+            # 确保流式消费者能收到终止信号——即使 graph 执行失败也会推送
+            if event_queue is not None:
+                await event_queue.put(_SENTINEL)
 
     async def execute_stream(
         self,
@@ -73,19 +78,16 @@ class OrchestrationEngine:
 
         try:
             while True:
-                try:
-                    event = await asyncio.wait_for(event_queue.get(), timeout=0.5)
-                except asyncio.TimeoutError:
-                    if task.done():
-                        break
-                    continue
-
+                event = await event_queue.get()
                 if event is _SENTINEL:
                     break
                 yield event
 
-            if task.done():
-                task.result()
+            # 循环正常退出后检查 background task 是否抛出了异常
+            exc = task.exception()
+            if exc is not None:
+                raise exc
         except Exception:
-            task.cancel()
+            if not task.done():
+                task.cancel()
             raise

@@ -61,9 +61,59 @@ async def _run_skill_agent(
     model_provider: Any,
     query: str,
 ) -> str:
-    agent = skill.create_agent(model_provider)
+    agent = skill.create_agent(model_provider, checkpointer=None)
     result = await agent.ainvoke({"messages": [HumanMessage(content=query)]})
     return result["messages"][-1].content
+
+
+# ── 工厂函数：避免 Python 闭包延迟绑定 ──────────────────────────
+
+
+def _make_sequential_step(
+    subtask: SubTask,
+    skills: dict[str, BaseSkill],
+    deps: PlatformDeps,
+    *,
+    include_previous: bool = True,
+):
+    """返回一个 LangGraph node 函数，执行单个子任务。"""
+
+    async def step_fn(state: OrchestrationState) -> dict:
+        await _emit(
+            state,
+            StepStartEvent(
+                step_id=subtask.id,
+                skill_name=subtask.skill_name,
+                description=subtask.description,
+            ),
+        )
+        query = subtask.description
+        if include_previous:
+            existing_results = state.get("subtask_results", {})
+            if existing_results:
+                prev = list(existing_results.values())[-1]
+                query = f"{subtask.description}\n\n参考前序结果：\n{prev}"
+
+        skill = skills[subtask.skill_name]
+        output = await _run_skill_agent(skill, deps.model_provider, query)
+
+        await _emit(
+            state,
+            StepDoneEvent(
+                step_id=subtask.id,
+                skill_name=subtask.skill_name,
+                result_summary=output[:200],
+            ),
+        )
+        return {
+            "subtask_results": {subtask.id: output},
+            "final_result": output,
+        }
+
+    return step_fn
+
+
+# ── 编排图构建 ──────────────────────────────────────────────────
 
 
 def build_sequential_graph(
@@ -73,41 +123,10 @@ def build_sequential_graph(
 ) -> CompiledStateGraph:
     builder = StateGraph(OrchestrationState)
 
-    for st in subtasks:
-        _st = st
-
-        async def step_fn(state: OrchestrationState, _subtask: SubTask = _st) -> dict:
-            await _emit(
-                state,
-                StepStartEvent(
-                    step_id=_subtask.id,
-                    skill_name=_subtask.skill_name,
-                    description=_subtask.description,
-                ),
-            )
-            query = _subtask.description
-            results = state.get("subtask_results", {})
-            if results:
-                prev = list(results.values())[-1]
-                query = f"{_subtask.description}\n\n参考前序结果：\n{prev}"
-
-            skill = skills[_subtask.skill_name]
-            output = await _run_skill_agent(skill, deps.model_provider, query)
-
-            await _emit(
-                state,
-                StepDoneEvent(
-                    step_id=_subtask.id,
-                    skill_name=_subtask.skill_name,
-                    result_summary=output[:200],
-                ),
-            )
-            return {
-                "subtask_results": {_subtask.id: output},
-                "final_result": output,
-            }
-
-        builder.add_node(f"step_{_st.id}", step_fn)
+    for i, st in enumerate(subtasks):
+        # 只有第一个 step 不注入前序结果
+        node_fn = _make_sequential_step(st, skills, deps, include_previous=(i > 0))
+        builder.add_node(f"step_{st.id}", node_fn)
 
     prev_name = START
     for st in subtasks:
@@ -193,13 +212,15 @@ def build_orchestrator_worker_graph(
     async def decompose(state: OrchestrationState) -> dict:
         model = deps.model_provider.get_model()
         skill_names = list(skills.keys())
-        response = await model.with_structured_output(ExecutionPlan).ainvoke(
+        response: ExecutionPlan = await model.with_structured_output(
+            ExecutionPlan
+        ).ainvoke(
             [
                 SystemMessage(
                     content=(
-                        f"你是一个任务分解专家。将用户问题分解为可以并行执行的子任务。\n"
+                        "你是一个任务分解专家。将用户问题分解为可以并行执行的子任务。\n"
                         f"可用技能: {', '.join(skill_names)}\n"
-                        f"返回 subtasks 列表。"
+                        "返回 subtasks 列表。"
                     )
                 ),
                 HumanMessage(content=state["original_query"]),
@@ -209,26 +230,38 @@ def build_orchestrator_worker_graph(
             await _emit(
                 state,
                 StepStartEvent(
-                    step_id=st.id, skill_name=st.skill_name, description=st.description
+                    step_id=st.id,
+                    skill_name=st.skill_name,
+                    description=st.description,
                 ),
             )
-        return {"subtask_results": {"_plan": str([s.model_dump() for s in response.subtasks])}}
+        # 直接存储 SubTask.model_dump() 列表，不再序列化为 JSON 字符串
+        return {
+            "subtask_results": {
+                "_plan": [s.model_dump() for s in response.subtasks]  # type: ignore[dict-item]
+            }
+        }
 
     async def execute_all(state: OrchestrationState) -> dict:
-        import json
+        plan_data = state["subtask_results"].get("_plan", [])  # type: ignore[list-item]
 
-        plan_str = state["subtask_results"].get("_plan", "[]")
-        try:
-            plan_data = json.loads(plan_str.replace("'", '"'))
-            dynamic_subtasks = [SubTask(**d) for d in plan_data]
-        except Exception:
-            dynamic_subtasks = subtasks
+        # plan_data 是 model_dump list；兼容旧版 JSON 字符串格式
+        if isinstance(plan_data, str):
+            import json
+
+            plan_data = json.loads(plan_data)
+        elif not isinstance(plan_data, list):
+            plan_data = []
+
+        dynamic_subtasks = [SubTask(**d) for d in plan_data] if plan_data else subtasks
 
         async def run_one(st: SubTask) -> tuple[str, str]:
             skill = skills.get(st.skill_name)
             if not skill:
                 return st.id, f"未找到技能: {st.skill_name}"
-            output = await _run_skill_agent(skill, deps.model_provider, st.description)
+            output = await _run_skill_agent(
+                skill, deps.model_provider, st.description
+            )
             await _emit(
                 state,
                 StepDoneEvent(
@@ -244,7 +277,11 @@ def build_orchestrator_worker_graph(
 
     async def synthesize(state: OrchestrationState) -> dict:
         await _emit(state, SynthesisStartEvent())
-        results = {k: v for k, v in state["subtask_results"].items() if not k.startswith("_")}
+        results = {
+            k: v
+            for k, v in state["subtask_results"].items()
+            if not k.startswith("_")
+        }
         parts = [f"## {k}\n{v}" for k, v in results.items()]
         context = "\n\n".join(parts)
 

@@ -54,12 +54,13 @@ def _build_router_prompt(deps: PlatformDeps) -> str:
 5. confidence 是你对路由决策的置信度 (0.0-1.0)"""
 
 
-async def route_and_execute(
+async def resolve_route(
     message: str,
     deps: PlatformDeps,
     *,
     model_id: str | None = None,
-) -> str:
+) -> RouterDecision:
+    """分析用户意图，返回路由决策。chat 端点的共享入口。"""
     model = deps.model_provider.get_model(model_id)
     structured_model = model.with_structured_output(RouterDecision)
 
@@ -74,6 +75,19 @@ async def route_and_execute(
         decision.mode,
         decision.confidence,
     )
+    return decision
+
+
+async def execute_decision(
+    decision: RouterDecision,
+    message: str,
+    deps: PlatformDeps,
+    *,
+    model_id: str | None = None,
+    session_id: str | None = None,
+) -> str:
+    """执行路由决策，返回最终回复文本。"""
+    invoke_cfg = _build_invoke_config(session_id)
 
     if decision.mode == "multi" and decision.execution_plan:
         engine = OrchestrationEngine(deps)
@@ -81,27 +95,78 @@ async def route_and_execute(
 
     skill = deps.skill_registry.get(decision.skill_name)
     if skill:
-        all_skills = {s.name: deps.skill_registry.get(s.name) for s in deps.skill_registry.list_skills()}
-        all_skills = {k: v for k, v in all_skills.items() if v is not None}
-        agent = skill.compose(all_skills, deps.model_provider) or skill.create_agent(deps.model_provider)
+        skills = deps.skill_registry.get_all_skills()
+        agent = skill.compose(skills, deps.model_provider) or skill.create_agent(
+            deps.model_provider, checkpointer=deps.checkpointer
+        )
         result = await agent.ainvoke(
-            {"messages": [HumanMessage(content=decision.rewritten_query)]}
+            {"messages": [HumanMessage(content=decision.rewritten_query)]},
+            config=invoke_cfg,
         )
         return result["messages"][-1].content
 
-    return await _general_response(message, deps, model_id)
+    return await _general_response(message, deps, model_id, invoke_cfg)
+
+
+async def execute_skill_direct(
+    skill_name: str,
+    message: str,
+    deps: PlatformDeps,
+    *,
+    model_id: str | None = None,
+    session_id: str | None = None,
+) -> str:
+    """跳过路由，直接调用指定技能。"""
+    invoke_cfg = _build_invoke_config(session_id)
+    skill = deps.skill_registry.get(skill_name)
+    if not skill:
+        return f"未找到技能: {skill_name}"
+
+    skills = deps.skill_registry.get_all_skills()
+    agent = skill.compose(skills, deps.model_provider) or skill.create_agent(
+        deps.model_provider, checkpointer=deps.checkpointer
+    )
+    result = await agent.ainvoke(
+        {"messages": [HumanMessage(content=message)]},
+        config=invoke_cfg,
+    )
+    return result["messages"][-1].content
+
+
+def _build_invoke_config(session_id: str | None) -> dict:
+    """构建 LangGraph ainvoke 的 config dict。"""
+    if session_id:
+        return {"configurable": {"thread_id": session_id}}
+    return {}
 
 
 async def _general_response(
     message: str,
     deps: PlatformDeps,
     model_id: str | None = None,
+    invoke_cfg: dict | None = None,
 ) -> str:
     model = deps.model_provider.get_model(model_id)
     result = await model.ainvoke(
         [
             SystemMessage(content="你是一个通用智能助手，尽力回答用户的问题。"),
             HumanMessage(content=message),
-        ]
+        ],
+        config=invoke_cfg or {},
     )
     return result.content
+
+
+# ── 向后兼容 ──────────────────────────────────────────────────
+
+
+async def route_and_execute(
+    message: str,
+    deps: PlatformDeps,
+    *,
+    model_id: str | None = None,
+    session_id: str | None = None,
+) -> str:
+    """分析意图 + 执行决策（单次调用便捷函数）。"""
+    decision = await resolve_route(message, deps, model_id=model_id)
+    return await execute_decision(decision, message, deps, model_id=model_id, session_id=session_id)

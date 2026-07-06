@@ -81,12 +81,13 @@ class ContractReviewSkill(BaseSkill):
             "分析一下这份采购合同",
         ]
 
-    def create_agent(self, model_provider: ModelProvider) -> CompiledStateGraph:
+    def create_agent(self, model_provider: ModelProvider, checkpointer=None) -> CompiledStateGraph:
         model = model_provider.get_model()
         return create_agent(
             model,
             [extract_clauses, review_clause, overall_risk_assessment],
             system_prompt=SYSTEM_PROMPT,
+            checkpointer=checkpointer,
         )
 
 

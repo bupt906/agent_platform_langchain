@@ -105,3 +105,27 @@ class TestCompositeSkillDiscovery:
             if info.name == "data_contract_review":
                 assert len(info.dependencies) == 2
                 break
+
+    def test_composite_skill_compose_returns_agent(self, skill_registry: SkillRegistry, model_provider):
+        """验证组合技能的 compose() 返回有效的 Agent。"""
+        skill = skill_registry.get("data_contract_review")
+        assert skill is not None
+
+        all_skills = skill_registry.get_all_skills()
+        # compose 需要依赖技能存在
+        if "data_query" in all_skills and "contract_review" in all_skills:
+            agent = skill.compose(all_skills, model_provider)
+            assert agent is not None
+
+    def test_composite_skill_fallback_without_dependencies(self, skill_registry: SkillRegistry, model_provider):
+        """compose() 在依赖缺失时返回 None，应降级为 create_agent()。"""
+        skill = skill_registry.get("data_contract_review")
+        assert skill is not None
+
+        # 传入空的 skills dict，compose 应该返回 None
+        result = skill.compose({}, model_provider)
+        assert result is None
+
+        # create_agent 应该仍然可用
+        agent = skill.create_agent(model_provider, checkpointer=None)
+        assert agent is not None

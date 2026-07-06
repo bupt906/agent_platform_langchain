@@ -51,9 +51,9 @@ class QASkill(BaseSkill):
             "帮我查一下相关的政策文件",
         ]
 
-    def create_agent(self, model_provider: ModelProvider) -> CompiledStateGraph:
+    def create_agent(self, model_provider: ModelProvider, checkpointer=None) -> CompiledStateGraph:
         model = model_provider.get_model()
-        return create_agent(model, [search_knowledge], system_prompt=SYSTEM_PROMPT)
+        return create_agent(model, [search_knowledge], system_prompt=SYSTEM_PROMPT, checkpointer=checkpointer)
 
 
 skill = QASkill()
