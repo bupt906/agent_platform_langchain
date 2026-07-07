@@ -3,18 +3,20 @@ from __future__ import annotations
 import logging
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
+from pathlib import Path
 
 import aiosqlite
 import httpx
 from fastapi import FastAPI
 from langgraph.checkpoint.sqlite import SqliteSaver
 
+from agent_platform.skill_manuals.loader import SkillManualRegistry
 from agent_platform.api.middleware import (
     AuthMiddleware,
     ObservabilityMiddleware,
     RateLimitMiddleware,
 )
-from agent_platform.api.routes import audit, chat, hitl, skills
+from agent_platform.api.routes import audit, chat, hitl, skills, manuals
 from agent_platform.config.settings import settings
 from agent_platform.core.deps import PlatformDeps
 from agent_platform.core.registry import SkillRegistry
@@ -53,6 +55,16 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     approval_db = await aiosqlite.connect(settings.audit_db_path)
     approval_store = ApprovalStore(approval_db)
 
+    # ── 技能手册加载 ──
+    manuals_dir = settings.skill_manual_path
+    if not Path(manuals_dir).is_absolute():
+        # 相对路径 → 相对于 agent_platform package 目录解析
+        package_dir = Path(__file__).parent.parent  # src/agent_platform/
+        manuals_dir = str(package_dir / manuals_dir)
+    manual_registry = SkillManualRegistry()
+    if settings.skill_manual_enabled:
+        manual_registry.load_from_dir(manuals_dir)
+
     async with httpx.AsyncClient() as http_client:
         deps = PlatformDeps(
             model_provider=model_provider,
@@ -64,6 +76,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
             summarizer=summarizer,
             audit_store=audit_store,
             approval_store=approval_store,
+            manual_registry=manual_registry,
         )
         app.state.deps = deps
         app.state.settings = settings
@@ -103,6 +116,7 @@ app.include_router(chat.router)
 app.include_router(skills.router)
 app.include_router(audit.router)
 app.include_router(hitl.router)
+app.include_router(manuals.router)
 
 
 @app.get("/health")

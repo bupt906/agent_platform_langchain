@@ -14,6 +14,7 @@
 - [内置技能详解](#内置技能详解)
 - [多 Agent 编排模式](#多-agent-编排模式)
 - [LLM 意图路由](#llm-意图路由)
+- [技能手册系统](#技能手册系统)
 - [持久化记忆系统](#持久化记忆系统)
 - [审计日志与追踪](#审计日志与追踪)
 - [Prompt 分层缓存](#prompt-分层缓存)
@@ -50,6 +51,7 @@
 | 配置管理 | pydantic-settings 2.x | 从环境变量 / `.env` 文件自动加载配置 |
 | HTTP 客户端 | httpx 0.27+ | 异步 HTTP 请求 |
 | 安全 | Bearer Token + 滑动窗口限流 | API 认证与速率限制 |
+| 技能手册 | Markdown + YAML frontmatter | 领域操作手册的加载、匹配与 prompt 注入 |
 | 可观测性 | 请求日志中间件 | 请求耗时统计 |
 
 ---
@@ -93,19 +95,25 @@ agent_platform_langchain/
 │   │   ├── store.py                #   审批请求持久化
 │   │   └── events.py               #   HITL SSE 事件
 │   │
-│   ├── skills/                     # 技能插件目录（自动发现）
-│   │   ├── base.py                 # 技能基类 BaseSkill
-│   │   ├── qa/                     # 知识问答技能 (RAG)
+│   ├── agents/                     # Agent 插件目录（自动发现）
+│   │   ├── base.py                 # Agent 基类 BaseSkill
+│   │   ├── qa/                     # 知识问答 Agent (RAG)
 │   │   │   ├── skill.py            #   Agent 定义 + 系统提示词
 │   │   │   └── tools.py            #   知识库检索工具
-│   │   ├── data_query/             # 自然语言问数技能 (Text-to-SQL)
+│   │   ├── data_query/             # 自然语言问数 Agent (Text-to-SQL)
 │   │   │   ├── skill.py            #   Agent 定义 + 系统提示词
 │   │   │   └── tools.py            #   SQL 执行 / 表结构查询工具
-│   │   ├── contract_review/        # 合同审查技能
+│   │   ├── contract_review/        # 合同审查 Agent
 │   │   │   ├── skill.py            #   Agent 定义 + 系统提示词
 │   │   │   └── tools.py            #   条款解析 / 风险检查 / 评估工具
-│   │   └── composite/              # 组合技能（数据 + 合同审查）
+│   │   └── composite/              # 组合 Agent（数据 + 合同审查）
 │   │       └── skill.py            #   编排多个子 Agent
+│   │
+│   ├── skill_manuals/              # 技能手册目录（操作指南型）
+│   │   ├── loader.py                #   手册加载 / 解析 / 关键词匹配
+│   │   ├── ppt.md                   #   PowerPoint 操作手册
+│   │   ├── feishu.md                #   飞书操作手册
+│   │   └── pdf.md                   #   PDF 操作手册
 │   │
 │   ├── core/
 │   │   ├── deps.py                 # 全局依赖容器 PlatformDeps
@@ -236,6 +244,8 @@ curl http://localhost:8000/hitl/approvals
 | `MAX_RETRIES` | `2` | 模型请求失败重试次数 |
 | `API_KEY` | (空) | API 认证密钥，为空则不启用认证 |
 | `RATE_LIMIT_PER_MINUTE` | `60` | 每 IP 每分钟最大请求数，0 = 不限 |
+| `SKILL_MANUAL_PATH` | `skill_manuals` | 技能手册 .md 文件目录（相对于 `agent_platform` package） |
+| `SKILL_MANUAL_ENABLED` | `true` | 是否启用技能手册匹配 |
 | `MEMORY_DB_PATH` | `memory.db` | 记忆数据库路径 |
 | `MEMORY_RETENTION_DAYS` | `90` | 对话历史保留天数 |
 | `AUTO_SUMMARIZE_THRESHOLD` | `10` | 触发自动摘要的轮次阈值 |
@@ -367,6 +377,40 @@ data: {"type": "approval_result", "approval_id": "a1b2c3", "status": "approved"}
     }
   ],
   "total": 4
+}
+```
+
+### 技能手册 API
+
+| 端点 | 方法 | 说明 |
+|------|------|------|
+| `/skill-manuals` | `GET` | 列出所有已加载的操作手册 |
+| `/skill-manuals/{name}` | `GET` | 查看指定手册完整内容 |
+| `/skill-manuals/{name}` | `PUT` | 动态注册 / 更新手册（无需重启） |
+| `/skill-manuals/{name}` | `DELETE` | 删除手册 |
+| `/skill-manuals/reload` | `POST` | 从磁盘目录重新加载所有手册 |
+
+**`GET /skill-manuals` 响应示例**：
+
+```json
+{
+  "manuals": [
+    {"name": "ppt", "description": "PowerPoint 操作指南", "keywords": ["PPT", "PowerPoint", "幻灯片"]},
+    {"name": "feishu", "description": "飞书操作指南", "keywords": ["飞书", "Feishu", "消息", "通知"]},
+    {"name": "pdf", "description": "PDF 操作指南", "keywords": ["PDF", "导出", "打印"]}
+  ],
+  "total": 3
+}
+```
+
+**`PUT /skill-manuals/xxx` 请求体**：
+
+```json
+{
+  "name": "excel",
+  "description": "Excel 操作指南",
+  "keywords": ["Excel", "表格", "CSV", "xlsx"],
+  "content": "# Excel 操作指南\n\n## 读写 Excel\n使用 openpyxl 库：\n```python\nfrom openpyxl import Workbook\n...\n```"
 }
 ```
 
@@ -543,6 +587,66 @@ class RouterDecision(BaseModel):
 ```
 
 路由器的系统提示词中包含所有已注册技能的名称、描述、示例问题和依赖关系，使 LLM 能够做出准确的路由判断。
+
+当用户意图不匹配任何 Agent（路由为 `general`）时，路由器会自动检查技能手册匹配——如果命中，则将手册全文注入 system prompt，让 LLM 严格按手册指导执行。
+
+---
+
+## 技能手册系统
+
+### 概念
+
+技能手册与 Agent 不同：
+
+| 维度 | Agent（`agents/`） | 技能手册（`skill_manuals/`） |
+|------|-------------------|---------------------------|
+| 本质 | 自主决策的 AI | 操作说明书 |
+| 内容 | Python 代码 + LangGraph + 工具 | Markdown 流程 + 命令模板 + 脚本 |
+| 行为 | 自动推理、调用工具 | 被载入上下文，指导 LLM 执行 |
+| 例子 | `contract_review` 自动审查合同 | "怎么生成 PPT"、"飞书发消息的套路" |
+
+### 手册格式
+
+Markdown + YAML frontmatter，放在 `skill_manuals/` 目录下：
+
+```markdown
+---
+name: ppt
+description: PowerPoint 操作指南
+keywords: [PPT, PowerPoint, 幻灯片, 演示文稿]
+---
+
+# PowerPoint 操作指南
+
+## 创建新演示文稿
+```python
+from pptx import Presentation
+prs = Presentation()
+...
+```
+```
+
+### 路由匹配
+
+```
+用户问 "帮我做个PPT"
+      ↓
+  LLM Router → 无 Agent 匹配 → general
+      ↓
+  manual_registry.match() → 关键词命中 ppt.md
+      ↓
+  将手册全文注入 system prompt
+      ↓
+  LLM 按手册中的 python-pptx 命令生成代码
+```
+
+### 接入方式
+
+三种方式，按灵活度排序：
+
+1. **丢文件**（最简单）—— 把 `.md` 手册文件放到 `skill_manuals/` 目录，重启生效
+2. **调 API**（动态）—— `PUT /skill-manuals/xxx` 注册，无需重启
+3. **外部路径**—— 改 `SKILL_MANUAL_PATH=/team/shared_manuals/` 指向共享目录
 
 ---
 
@@ -822,7 +926,7 @@ invalidate_mcp_cache()
 ### 1. 创建目录结构
 
 ```
-src/agent_platform/skills/my_skill/
+src/agent_platform/agents/my_agent/
 ├── __init__.py
 ├── skill.py
 └── tools.py
@@ -842,7 +946,7 @@ async def my_domain_tool(query: str) -> list[dict]:
 ```python
 from langchain_core.tools import tool
 from langchain.agents import create_agent
-from agent_platform.skills.base import BaseSkill
+from agent_platform.agents.base import BaseSkill
 from .tools import my_domain_tool
 
 SYSTEM_PROMPT = "你是一个 XX 领域的专业助手。..."

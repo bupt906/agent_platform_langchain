@@ -62,6 +62,10 @@ class Settings(BaseSettings):
     tool_budget_max_calls: int = 50  # 单次对话最大工具调用次数
     mcp_dynamic_reload: bool = True  # 运行时重载 MCP 工具
 
+    # ── 技能手册 ──
+    skill_manual_path: str = "skill_manuals"  # 技能手册 .md 文件目录
+    skill_manual_enabled: bool = True  # 是否启用手册匹配
+
     # ── Human-in-the-loop ──
     hitl_enabled: bool = True  # 全局启用/禁用 HITL
     hitl_approval_timeout: int = 300  # 审批超时（秒）

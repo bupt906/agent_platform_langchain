@@ -88,11 +88,17 @@ async def chat_stream(request: Request, body: ChatRequest) -> EventSourceRespons
         # ── 单技能 / 通用流式 ──
         skill = deps.skill_registry.get(skill_name)
         if not skill:
-            # 通用对话
+            # 通用对话 —— 检查技能手册
+            system_content = "你是一个通用智能助手，尽力回答用户的问题。"
+            if deps.manual_registry and deps.manual_registry.count > 0:
+                manual_prompt = deps.manual_registry.get_prompt_text(body.message)
+                if manual_prompt:
+                    system_content += f"\n\n{manual_prompt}"
+
             model = deps.model_provider.get_model(body.model)
             async for chunk in model.astream(
                 [
-                    SystemMessage(content="你是一个通用智能助手，尽力回答用户的问题。"),
+                    SystemMessage(content=system_content),
                     HumanMessage(content=body.message),
                 ]
             ):

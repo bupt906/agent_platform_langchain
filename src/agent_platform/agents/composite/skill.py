@@ -6,7 +6,7 @@ from langchain.agents import create_agent as build_agent
 from langchain_core.messages import HumanMessage
 from langchain_core.tools import tool
 
-from agent_platform.skills.base import BaseSkill
+from agent_platform.agents.base import BaseSkill
 
 if TYPE_CHECKING:
     from langgraph.graph.state import CompiledStateGraph

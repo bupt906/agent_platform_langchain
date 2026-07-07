@@ -5,8 +5,8 @@ from typing import TYPE_CHECKING
 from langchain.agents import create_agent
 from langchain_core.tools import tool
 
-from agent_platform.skills.base import BaseSkill
-from agent_platform.skills.contract_review.tools import (
+from agent_platform.agents.base import BaseSkill
+from agent_platform.agents.contract_review.tools import (
     assess_risk,
     check_clause,
     parse_contract,

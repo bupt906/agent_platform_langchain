@@ -3,13 +3,13 @@ from __future__ import annotations
 import pytest
 
 from agent_platform.core.registry import SkillRegistry
-from agent_platform.skills.contract_review.tools import (
+from agent_platform.agents.contract_review.tools import (
     assess_risk,
     check_clause,
     parse_contract,
 )
-from agent_platform.skills.data_query.tools import execute_sql, get_table_schema, _validate_sql
-from agent_platform.skills.qa.tools import knowledge_search
+from agent_platform.agents.data_query.tools import execute_sql, get_table_schema, _validate_sql
+from agent_platform.agents.qa.tools import knowledge_search
 
 
 class TestSkillRegistry:

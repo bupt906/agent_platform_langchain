@@ -5,8 +5,8 @@ from typing import TYPE_CHECKING
 from langchain.agents import create_agent
 from langchain_core.tools import tool
 
-from agent_platform.skills.base import BaseSkill
-from agent_platform.skills.qa.tools import knowledge_search
+from agent_platform.agents.base import BaseSkill
+from agent_platform.agents.qa.tools import knowledge_search
 
 if TYPE_CHECKING:
     from langgraph.graph.state import CompiledStateGraph

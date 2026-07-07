@@ -114,7 +114,16 @@ async def execute_decision(
                 )
                 reply = result["messages"][-1].content
             else:
-                reply = await _general_response(message, deps, model_id, invoke_cfg)
+                # 检查技能手册匹配
+                manual_name: str | None = None
+                if deps.manual_registry:
+                    matched = deps.manual_registry.match(message)
+                    if matched:
+                        manual_name = matched.name
+                        decision.skill_name = f"manual:{matched.name}"
+                reply = await _general_response(
+                    message, deps, model_id, invoke_cfg, manual_name=manual_name
+                )
     except Exception as e:
         error = str(e)
         logger.error("决策执行失败: %s", error, exc_info=True)
@@ -239,11 +248,29 @@ async def _general_response(
     deps: PlatformDeps,
     model_id: str | None = None,
     invoke_cfg: dict | None = None,
+    *,
+    manual_name: str | None = None,
 ) -> str:
+    """通用对话回复，可选注入技能手册内容。"""
+    system_content = "你是一个通用智能助手，尽力回答用户的问题。"
+
+    # ── 技能手册注入 ──
+    if deps.manual_registry and deps.manual_registry.count > 0:
+        # 按指定名称获取，或自动匹配
+        manual_prompt = None
+        if manual_name:
+            manual_prompt = deps.manual_registry.get_prompt_text(manual_name)
+        else:
+            manual_prompt = deps.manual_registry.get_prompt_text(message)
+
+        if manual_prompt:
+            system_content += f"\n\n{manual_prompt}"
+            logger.info("注入技能手册: %s", manual_name or "自动匹配")
+
     model = deps.model_provider.get_model(model_id)
     result = await model.ainvoke(
         [
-            SystemMessage(content="你是一个通用智能助手，尽力回答用户的问题。"),
+            SystemMessage(content=system_content),
             HumanMessage(content=message),
         ],
         config=invoke_cfg or {},

@@ -19,7 +19,7 @@ if TYPE_CHECKING:
     from langgraph.graph.state import CompiledStateGraph
 
     from agent_platform.core.deps import PlatformDeps
-    from agent_platform.skills.base import BaseSkill
+    from agent_platform.agents.base import BaseSkill
 
 logger = logging.getLogger(__name__)
 

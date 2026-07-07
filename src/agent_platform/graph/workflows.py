@@ -7,7 +7,7 @@ from typing import Annotated, TypedDict
 from langgraph.graph import END, START, StateGraph
 from pydantic import BaseModel
 
-from agent_platform.skills.contract_review.tools import (
+from agent_platform.agents.contract_review.tools import (
     assess_risk,
     check_clause,
     parse_contract,
