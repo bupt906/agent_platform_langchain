@@ -73,3 +73,59 @@ async def load_mcp_tools(config_path: Path) -> list:
         logger.info("从 MCP 服务器加载了 %d 个工具", len(tools))
 
     return tools
+
+
+# ── 缓存（动态重载用） ─────────────────────────────────────
+
+_mcp_tool_cache: dict[str, tuple[float, list]] = {}
+
+
+async def load_mcp_tools_dynamic(
+    config_path: Path,
+    *,
+    tool_filter: str | None = None,
+    cache_ttl: float = 300.0,
+) -> list:
+    """动态加载 MCP 工具，支持缓存和筛选。
+
+    与 load_mcp_tools 类似，但：
+    - 按 config_path 缓存结果，TTL 后自动重新加载
+    - 支持 tool_filter 按名称筛选工具
+    - 适合运行时动态添加/移除 MCP 工具
+
+    Args:
+        config_path: MCP 配置文件路径
+        tool_filter: 可选，工具名前缀筛选
+        cache_ttl: 缓存有效期（秒），0 = 不缓存
+
+    Returns:
+        LangChain 工具列表
+    """
+    import time
+
+    cache_key = str(config_path.absolute())
+    now = time.monotonic()
+
+    if cache_ttl > 0 and cache_key in _mcp_tool_cache:
+        cached_at, cached_tools = _mcp_tool_cache[cache_key]
+        if now - cached_at < cache_ttl:
+            tools = cached_tools
+            if tool_filter:
+                tools = [t for t in tools if t.name.startswith(tool_filter)]
+            return tools
+
+    tools = await load_mcp_tools(config_path)
+    _mcp_tool_cache[cache_key] = (now, tools)
+
+    if tool_filter:
+        tools = [t for t in tools if t.name.startswith(tool_filter)]
+
+    return tools
+
+
+def invalidate_mcp_cache(config_path: Path | None = None) -> None:
+    """使 MCP 工具缓存失效。如果不传 config_path 则清空全部缓存。"""
+    if config_path:
+        _mcp_tool_cache.pop(str(config_path.absolute()), None)
+    else:
+        _mcp_tool_cache.clear()

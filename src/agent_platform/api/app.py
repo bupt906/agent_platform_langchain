@@ -4,19 +4,21 @@ import logging
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 
+import aiosqlite
 import httpx
 from fastapi import FastAPI
-from langgraph.checkpoint.memory import InMemorySaver
+from langgraph.checkpoint.sqlite import SqliteSaver
 
 from agent_platform.api.middleware import (
     AuthMiddleware,
     ObservabilityMiddleware,
     RateLimitMiddleware,
 )
-from agent_platform.api.routes import chat, skills
+from agent_platform.api.routes import audit, chat, hitl, skills
 from agent_platform.config.settings import settings
 from agent_platform.core.deps import PlatformDeps
 from agent_platform.core.registry import SkillRegistry
+from agent_platform.memory import ConversationSummarizer, SessionStore, UserProfileStore
 from agent_platform.models.provider import ModelProvider
 
 logger = logging.getLogger(__name__)
@@ -32,12 +34,36 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     skill_registry = SkillRegistry()
     skill_registry.auto_discover()
 
+    # ── 持久化存储初始化 ──
+    memory_db = await aiosqlite.connect(settings.memory_db_path)
+    audit_db = await aiosqlite.connect(settings.audit_db_path)
+
+    session_store = SessionStore(memory_db)
+    user_profile_store = UserProfileStore(memory_db)
+    summarizer = ConversationSummarizer(model_provider)
+    checkpointer = SqliteSaver.from_conn_string(settings.memory_db_path)
+
+    from agent_platform.audit.store import AuditStore
+
+    audit_store = AuditStore(audit_db)
+
+    # 审批存储：复用审计数据库连接
+    from agent_platform.hitl.store import ApprovalStore
+
+    approval_db = await aiosqlite.connect(settings.audit_db_path)
+    approval_store = ApprovalStore(approval_db)
+
     async with httpx.AsyncClient() as http_client:
         deps = PlatformDeps(
             model_provider=model_provider,
             skill_registry=skill_registry,
             http_client=http_client,
-            checkpointer=InMemorySaver(),
+            checkpointer=checkpointer,
+            session_store=session_store,
+            user_profile_store=user_profile_store,
+            summarizer=summarizer,
+            audit_store=audit_store,
+            approval_store=approval_store,
         )
         app.state.deps = deps
         app.state.settings = settings
@@ -47,6 +73,10 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
             ", ".join(skill_registry.skill_names()),
         )
         yield
+
+    await memory_db.close()
+    await audit_db.close()
+    await approval_db.close()
 
 
 app = FastAPI(
@@ -71,6 +101,8 @@ app.add_middleware(AuthMiddleware)
 
 app.include_router(chat.router)
 app.include_router(skills.router)
+app.include_router(audit.router)
+app.include_router(hitl.router)
 
 
 @app.get("/health")

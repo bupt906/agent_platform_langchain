@@ -1,0 +1,9 @@
+{
+  "permissions": {
+    "allow": [
+      "WebSearch",
+      "Bash(/Users/zhangxinyu/Documents/联通/agent_platform_langchain/.venv/bin/pip install *)",
+      "Bash(/Users/zhangxinyu/Documents/联通/agent_platform_langchain/.venv/bin/python3 *)"
+    ]
+  }
+}

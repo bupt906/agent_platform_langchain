@@ -59,6 +59,24 @@ class BaseSkill(ABC):
     # ── 可覆写 ────────────────────────────────────────────
 
     @property
+    def prompt_stable_layer(self) -> str:
+        """稳定 prompt 层：agent 身份和固定指令。默认返回空，让 builder 使用缓存值。"""
+        return ""
+
+    @property
+    def prompt_context_layer(self) -> str:
+        """上下文 prompt 层：技能描述和工具列表。"""
+        return self.description
+
+    @property
+    def tool_config(self) -> dict:
+        """工具优化配置。"""
+        return {
+            "timeout": 30.0,
+            "parallel": True,
+        }
+
+    @property
     def examples(self) -> list[str]:
         return []
 

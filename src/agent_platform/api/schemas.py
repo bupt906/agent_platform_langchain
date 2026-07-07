@@ -14,6 +14,9 @@ class ChatResponse(BaseModel):
     reply: str
     skill_used: str
     model_used: str = ""
+    session_id: str | None = None
+    approval_required: bool = False
+    approval_id: str | None = None
 
 
 class SkillInfoResponse(BaseModel):

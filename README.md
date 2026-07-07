@@ -1,6 +1,6 @@
 # 智能体中台 (Agent Platform) — LangChain 版
 
-基于 **LangChain / LangGraph** 的通用智能 Agent 中间件，提供多模型适配、技能插件机制、LLM 意图路由、多 Agent 编排、SSE 流式输出、MCP Server 集成等能力。
+基于 **LangChain / LangGraph** 的通用智能 Agent 中间件，提供多模型适配、技能插件机制、LLM 意图路由、多 Agent 编排、SSE 流式输出、MCP Server 集成、持久化记忆、审计日志、Human-in-the-loop 等能力。
 
 ---
 
@@ -14,6 +14,11 @@
 - [内置技能详解](#内置技能详解)
 - [多 Agent 编排模式](#多-agent-编排模式)
 - [LLM 意图路由](#llm-意图路由)
+- [持久化记忆系统](#持久化记忆系统)
+- [审计日志与追踪](#审计日志与追踪)
+- [Prompt 分层缓存](#prompt-分层缓存)
+- [Tool 优化](#tool-优化)
+- [Human-in-the-Loop（人机协同）](#human-in-the-loop人机协同)
 - [MCP Server 集成](#mcp-server-集成)
 - [配置管理说明](#配置管理说明)
 - [添加新技能](#添加新技能)
@@ -33,12 +38,17 @@
 | 编排引擎 | `langgraph.graph.StateGraph` | 基于有限状态机的多 Agent 工作流编排 |
 | 结构化输出 | `ChatModel.with_structured_output()` | 让 LLM 输出符合 Pydantic Schema 的结构化数据 |
 | 模型容错 | `ChatModel.with_fallbacks()` | 主模型失败时自动切换到备用模型 |
+| 持久化记忆 | SQLite + FTS5 | 对话历史持久化、全文搜索、用户画像 |
+| 检查点 | `langgraph-checkpoint-sqlite` | LangGraph 状态持久化，服务重启不丢失 |
+| 审计日志 | SQLite | 每次 Agent 调用的完整审计追踪 |
+| HITL | LangGraph `interrupt()` / `Command` | 人机协同审批、动态重规划 |
+| Prompt 分层 | `LayeredPromptBuilder` | 三层架构优化 Provider 端 Prompt 缓存命中率 |
+| Tool 优化 | 超时控制 / 令牌桶限流 / 预算管理 | 工具调用的可靠性保障 |
 | MCP 集成 | `langchain-mcp-adapters` 0.3+ | 将 MCP Server 的工具转换为 LangChain 工具 |
 | Web 框架 | FastAPI 0.115+ | 异步 REST API 框架 |
 | 流式输出 | SSE-Starlette 3.x | Server-Sent Events 流式推送 |
-| 配置管理 | pydantic-settings 2.x | 从环境变量 / `.env` 文件自动加载配置（详见下方说明） |
+| 配置管理 | pydantic-settings 2.x | 从环境变量 / `.env` 文件自动加载配置 |
 | HTTP 客户端 | httpx 0.27+ | 异步 HTTP 请求 |
-| 会话管理 | LangGraph Checkpointer (InMemorySaver) | 多轮对话状态持久化 |
 | 安全 | Bearer Token + 滑动窗口限流 | API 认证与速率限制 |
 | 可观测性 | 请求日志中间件 | 请求耗时统计 |
 
@@ -58,6 +68,30 @@ agent_platform_langchain/
 │   │
 │   ├── models/
 │   │   └── provider.py             # 多模型适配器（DeepSeek/Qwen/Ollama/OpenAI）
+│   │
+│   ├── memory/                     # 持久化记忆系统
+│   │   ├── session_store.py        #   会话持久化 + FTS5 全文搜索
+│   │   ├── summarizer.py           #   LLM 驱动的对话摘要
+│   │   └── user_profile.py         #   用户画像存储
+│   │
+│   ├── audit/                      # 审计日志
+│   │   ├── schema.py               #   AuditRecord / ToolCallRecord 模型
+│   │   └── store.py                #   审计存储 + 聚合统计
+│   │
+│   ├── prompts/                    # Prompt 分层缓存
+│   │   ├── templates.py            #   可复用模板常量
+│   │   └── builder.py              #   LayeredPromptBuilder
+│   │
+│   ├── tools/                      # Tool 优化
+│   │   ├── timeout.py              #   工具超时控制
+│   │   ├── rate_limiter.py         #   令牌桶速率限制
+│   │   ├── budget.py               #   工具调用预算管理
+│   │   └── parallel.py             #   并行工具执行
+│   │
+│   ├── hitl/                       # Human-in-the-Loop
+│   │   ├── types.py                #   ApprovalRequest 等数据模型
+│   │   ├── store.py                #   审批请求持久化
+│   │   └── events.py               #   HITL SSE 事件
 │   │
 │   ├── skills/                     # 技能插件目录（自动发现）
 │   │   ├── base.py                 # 技能基类 BaseSkill
@@ -79,28 +113,35 @@ agent_platform_langchain/
 │   │   └── router.py               # LLM 意图路由器
 │   │
 │   ├── graph/
-│   │   ├── events.py               # 编排事件定义（SSE 推送用）
-│   │   ├── patterns.py             # 编排模式（Sequential/Parallel/Orchestrator）
+│   │   ├── events.py               # 编排事件定义（含 HITL 事件）
+│   │   ├── patterns.py             # 编排模式（Sequential/Parallel/Orchestrator + HITL）
 │   │   ├── orchestration.py        # 编排引擎 OrchestrationEngine
 │   │   └── workflows.py            # 示例工作流（合同审查流水线）
 │   │
 │   ├── mcp_servers/
-│   │   └── registry.py             # MCP Server 加载器
+│   │   └── registry.py             # MCP Server 加载器（含动态重载）
 │   │
-│   ├── api/
+│   └── api/
 │       ├── app.py                  # FastAPI 应用入口 + lifespan + 中间件注册
 │       ├── middleware.py            # 认证 / 限流 / 可观测性中间件
 │       ├── schemas.py              # 请求/响应 Pydantic 模型
 │       └── routes/
 │           ├── chat.py             # /chat 和 /chat/stream 端点
-│           └── skills.py           # /skills 端点
+│           ├── skills.py           # /skills 端点
+│           ├── audit.py            # /audit 审计日志端点
+│           └── hitl.py             # /hitl 人机协同端点
 │
-└── tests/                          # 测试套件（51 个测试）
+└── tests/                          # 测试套件（107 个测试）
     ├── conftest.py                 # Pytest Fixtures
     ├── test_skills.py              # 技能注册 + 工具函数 + SQL 注入校验测试
     ├── test_router.py              # 路由决策 + 路由 prompt 构建 + invoke config 测试
     ├── test_orchestration.py       # 事件序列化 + 执行计划 + sentinel 模式测试
-    └── test_multi_agent_router.py  # 多 Agent 模式 + 组合技能 compose 测试
+    ├── test_multi_agent_router.py  # 多 Agent 模式 + 组合技能 compose 测试
+    ├── test_memory.py              # 持久化记忆测试
+    ├── test_audit.py               # 审计日志测试
+    ├── test_prompts.py             # Prompt 分层缓存测试
+    ├── test_tools.py               # Tool 优化测试
+    └── test_hitl.py                # HITL 人机协同测试
 ```
 
 ---
@@ -162,6 +203,15 @@ curl -N -X POST http://localhost:8000/chat/stream \
 
 # 查看所有技能
 curl http://localhost:8000/skills
+
+# 查询审计日志
+curl http://localhost:8000/audit
+
+# 查看审计统计
+curl http://localhost:8000/audit/stats
+
+# 查看待审批请求（HITL）
+curl http://localhost:8000/hitl/approvals
 ```
 
 ---
@@ -186,6 +236,17 @@ curl http://localhost:8000/skills
 | `MAX_RETRIES` | `2` | 模型请求失败重试次数 |
 | `API_KEY` | (空) | API 认证密钥，为空则不启用认证 |
 | `RATE_LIMIT_PER_MINUTE` | `60` | 每 IP 每分钟最大请求数，0 = 不限 |
+| `MEMORY_DB_PATH` | `memory.db` | 记忆数据库路径 |
+| `MEMORY_RETENTION_DAYS` | `90` | 对话历史保留天数 |
+| `AUTO_SUMMARIZE_THRESHOLD` | `10` | 触发自动摘要的轮次阈值 |
+| `AUDIT_DB_PATH` | `audit.db` | 审计日志数据库路径 |
+| `AUDIT_LOG_RETENTION_DAYS` | `365` | 审计日志保留天数 |
+| `PROMPT_CACHE_ENABLED` | `true` | 是否启用分层 Prompt 缓存 |
+| `TOOL_TIMEOUT_SECONDS` | `30.0` | 单个工具调用超时秒数 |
+| `TOOL_RATE_LIMIT_PER_MINUTE` | `100` | 全局工具调用速率限制 |
+| `TOOL_BUDGET_MAX_CALLS` | `50` | 单次对话最大工具调用次数 |
+| `HITL_ENABLED` | `true` | 是否启用人机协同 |
+| `HITL_APPROVAL_TIMEOUT` | `300` | 审批超时秒数 |
 
 **模型 ID 格式**：`提供商:模型名`，例如：
 - `deepseek:deepseek-chat` — DeepSeek 对话模型
@@ -216,13 +277,17 @@ curl http://localhost:8000/skills
 {
   "reply": "Agent 的回答内容",
   "skill_used": "qa",           // 实际使用的技能名称
-  "model_used": ""              // 实际使用的模型
+  "model_used": "",             // 实际使用的模型
+  "session_id": "abc123",       // 会话 ID
+  "approval_required": false,   // 是否需要人工审批
+  "approval_id": null           // 审批请求 ID
 }
 ```
 
 **处理流程**：
 1. 如果指定了 `skill`：直接调用对应技能的 Agent
 2. 如果未指定：LLM 路由器分析意图 → 选择 single 或 multi 模式 → 执行
+3. 如果触及 HITL 敏感操作：暂停执行并返回 `approval_required=true`
 
 ---
 
@@ -269,6 +334,16 @@ event: done
 data: {"type": "done", "skill": "multi_agent"}
 ```
 
+**HITL 审批事件**：
+
+```
+event: approval_needed
+data: {"type": "approval_needed", "approval_id": "a1b2c3", "operation": "sql_execution", "skill_name": "data_query", "details": "执行 SQL: SELECT * FROM users"}
+
+event: approval_result
+data: {"type": "approval_result", "approval_id": "a1b2c3", "status": "approved"}
+```
+
 ---
 
 ### GET `/skills` — 列出所有技能
@@ -300,6 +375,45 @@ data: {"type": "done", "skill": "multi_agent"}
 ```json
 {"status": "ok"}
 ```
+
+### GET `/audit` — 查询审计日志
+
+**查询参数**：
+
+| 参数 | 默认值 | 说明 |
+|------|--------|------|
+| `session_id` | (空) | 按会话 ID 过滤 |
+| `skill` | (空) | 按技能名过滤 |
+| `limit` | 100 | 返回条数上限 |
+| `offset` | 0 | 分页偏移 |
+
+### GET `/audit/stats` — 审计统计
+
+```json
+{
+  "total_calls": 1523,
+  "total_tokens": 450000,
+  "total_duration_ms": 120000.5,
+  "avg_duration_ms": 78.8,
+  "by_skill": {"qa": 800, "data_query": 500, "contract_review": 223},
+  "errors": 12
+}
+```
+
+### GET `/audit/{id}/tools` — 查询某次调用的工具链
+
+### GET `/hitl/approvals` — 列出待审批请求
+
+### POST `/hitl/approvals/{id}/decide` — 批准/拒绝审批
+
+```json
+{
+  "decision": "approve",
+  "message": "已确认，继续执行"
+}
+```
+
+### POST `/hitl/replan` — 提交重规划请求
 
 ### 认证
 
@@ -403,6 +517,16 @@ LLM 先将问题分解为子任务，再并行执行所有子任务，最后综�
 
 **适用场景**：开放式复杂问题，无法预先确定需要哪些技能
 
+### Sequential with HITL（带审批的顺序执行）
+
+对于敏感操作（如 SQL 执行、合同决策），在执行前自动插入审批门控节点：
+
+```
+用户问题 → [审批门控: 确认SQL] → [步骤1: 查询数据] → [审批门控: 确认决策] → [步骤2: 审查合同] → 最终结果
+```
+
+**适用场景**：需要人工确认的数据查询、合同签署决策等
+
 ---
 
 ## LLM 意图路由
@@ -419,6 +543,203 @@ class RouterDecision(BaseModel):
 ```
 
 路由器的系统提示词中包含所有已注册技能的名称、描述、示例问题和依赖关系，使 LLM 能够做出准确的路由判断。
+
+---
+
+## 持久化记忆系统
+
+### 架构
+
+采用 SQLite + FTS5 全文搜索的三级记忆存储：
+
+| 层级 | 存储 | 内容 |
+|------|------|------|
+| 会话历史 | `conversations` 表 + FTS5 | 每轮对话的完整记录，支持全文检索 |
+| 对话摘要 | `ConversationSummarizer` | LLM 驱动的自动摘要，超过阈值（默认 10 轮）触发 |
+| 用户画像 | `user_profiles` 表 | 用户偏好、上下文信息，跨 session 持久化 |
+
+### 使用
+
+```python
+# 会话历史
+await deps.session_store.add_turn(session_id, user_msg, reply, skill_used="qa")
+history = await deps.session_store.get_session_history(session_id, limit=50)
+
+# 全文搜索
+results = await deps.session_store.search("请假制度")
+
+# 用户画像
+await deps.user_profile_store.merge_preferences(session_id, {"language": "zh"})
+prefs = await deps.user_profile_store.get_profile(session_id)
+```
+
+### 配置
+
+| 环境变量 | 默认值 | 说明 |
+|----------|--------|------|
+| `MEMORY_DB_PATH` | `memory.db` | 记忆数据库文件路径 |
+| `MEMORY_RETENTION_DAYS` | `90` | 历史记录保留天数 |
+| `AUTO_SUMMARIZE_THRESHOLD` | `10` | 触发自动摘要的对话轮次 |
+
+---
+
+## 审计日志与追踪
+
+### 审计记录
+
+每次 Agent 调用自动生成 `AuditRecord`，记录：
+
+- 会话 ID、技能、模型
+- 用户消息与助手回复
+- Token 用量（prompt / completion / total）
+- 执行耗时
+- 路由置信度
+- 异常信息
+
+### 工具调用追踪
+
+每次工具调用生成 `ToolCallRecord`，记录：
+
+- 工具名称
+- 调用耗时
+- 输入参数（JSON）和输出摘要
+- 成功/失败状态
+
+### API
+
+```bash
+# 查询日志
+curl http://localhost:8000/audit?skill=data_query&limit=50
+
+# 聚合统计
+curl http://localhost:8000/audit/stats?days=30
+
+# 工具调用链
+curl http://localhost:8000/audit/{audit_id}/tools
+```
+
+---
+
+## Prompt 分层缓存
+
+### 三层架构
+
+```
+┌─────────────────────────────────────┐
+│  稳定层 (Stable)                      │  Agent 身份、全局规则
+│  LRU 缓存，TTL 300s                  │  示例："你是一个智能问答助手..."
+├─────────────────────────────────────┤
+│  上下文层 (Context)                    │  技能描述、工具列表
+│  技能注册表变更时刷新                    │  示例："可用技能: qa, data_query..."
+├─────────────────────────────────────┤
+│  易变层 (Volatile)                     │  用户查询、对话历史
+│  每次请求动态构建                       │  示例："用户问题: 请假制度..."
+└─────────────────────────────────────┘
+```
+
+稳定层和上下文层被 Provider 的 Prompt Cache 命中，每次请求仅易变层产生新的 token 开销。
+
+### 配置
+
+| 环境变量 | 默认值 | 说明 |
+|----------|--------|------|
+| `PROMPT_CACHE_ENABLED` | `true` | 是否启用分层缓存 |
+| `PROMPT_CACHE_TTL` | `300` | 稳定层缓存 TTL（秒） |
+
+---
+
+## Tool 优化
+
+### 超时控制
+
+所有工具调用自动包裹 `asyncio.wait_for`，超时后返回可读错误信息而非抛出异常：
+
+```python
+from agent_platform.tools import with_timeout
+
+@with_timeout(10.0)
+async def search_knowledge(query: str) -> str: ...
+```
+
+配置：`TOOL_TIMEOUT_SECONDS`（默认 30 秒）
+
+### 速率限制
+
+基于令牌桶算法的两级限流（全局 + 单工具）：
+
+```python
+from agent_platform.tools import ToolRateLimiter
+
+limiter = ToolRateLimiter(global_rate_per_minute=100)
+if await limiter.acquire("search_knowledge"):
+    result = await search_knowledge(query)
+```
+
+配置：`TOOL_RATE_LIMIT_PER_MINUTE`（默认 100）
+
+### 调用预算
+
+按 session 追踪工具调用次数，超出预算后阻止进一步调用：
+
+```python
+from agent_platform.tools import ToolBudgetManager
+
+mgr = ToolBudgetManager(max_calls_per_session=50)
+if mgr.can_call(session_id):
+    mgr.record_call(session_id, "search_knowledge")
+```
+
+配置：`TOOL_BUDGET_MAX_CALLS`（默认 50）
+
+### 并行执行
+
+当 Agent 在单个 ReAct 步骤中发出多个工具调用时，自动并行执行：
+
+```python
+from agent_platform.tools import execute_tools_parallel
+
+results = await execute_tools_parallel(tool_calls, max_concurrency=5)
+```
+
+---
+
+## Human-in-the-Loop（人机协同）
+
+### 工作原理
+
+基于 LangGraph 的 `interrupt()` / `Command` 原语：
+
+1. 编排图中的敏感节点前插入**审批门控节点**
+2. 门控节点调用 `interrupt()` 挂起执行
+3. 客户端收到 `approval_needed` SSE 事件
+4. 人工通过 API 审批（批准/拒绝）
+5. 系统使用 `Command(resume=...)` 恢复执行
+
+### 配置
+
+| 环境变量 | 默认值 | 说明 |
+|----------|--------|------|
+| `HITL_ENABLED` | `true` | 全局启用/禁用 HITL |
+| `HITL_APPROVAL_TIMEOUT` | `300` | 审批超时秒数 |
+| `HITL_SENSITIVE_SKILLS` | `["data_query", "contract_review"]` | 需要审批的技能列表 |
+| `HITL_AUTO_APPROVE_LOW_RISK` | `false` | 是否自动批准低风险操作 |
+
+### API
+
+```bash
+# 查看待审批请求
+curl http://localhost:8000/hitl/approvals
+
+# 批准
+curl -X POST http://localhost:8000/hitl/approvals/{id}/decide \
+  -H "Content-Type: application/json" \
+  -d '{"decision": "approve", "message": "已确认"}'
+
+# 拒绝
+curl -X POST http://localhost:8000/hitl/approvals/{id}/decide \
+  -H "Content-Type: application/json" \
+  -d '{"decision": "reject", "message": "不允许此操作"}'
+```
 
 ---
 
@@ -453,6 +774,20 @@ class RouterDecision(BaseModel):
 | `tool_prefix` | 工具名前缀，避免跨 Server 工具名冲突 |
 | `enabled` | 是否启用该 Server |
 
+### 动态重载
+
+支持运行时动态加载 MCP 工具，带缓存和筛选能力：
+
+```python
+from agent_platform.mcp_servers.registry import load_mcp_tools_dynamic, invalidate_mcp_cache
+
+# 动态加载（默认缓存 300 秒）
+tools = await load_mcp_tools_dynamic(config_path, tool_filter="fs_", cache_ttl=60)
+
+# 使缓存失效
+invalidate_mcp_cache()
+```
+
 ---
 
 ## 配置管理说明
@@ -477,30 +812,6 @@ class RouterDecision(BaseModel):
 | 环境变量映射 | 无 | 字段名自动映射为大写环境变量名 |
 | `.env` 文件支持 | 无 | 内置支持 |
 | 适用场景 | API 请求体、数据模型 | 应用配置、密钥管理 |
-
-### 本项目中的用法
-
-```python
-# src/agent_platform/config/settings.py
-
-class ModelConfig(BaseSettings):
-    deepseek_api_key: str = ""      # ← 自动读取环境变量 DEEPSEEK_API_KEY
-    deepseek_base_url: str = "https://api.deepseek.com/v1"
-    # ...
-
-    model_config = {"env_file": ".env", "extra": "ignore"}
-
-class Settings(BaseSettings):
-    default_model: str = "deepseek:deepseek-chat"  # ← 自动读取 DEFAULT_MODEL
-    api_host: str = "0.0.0.0"                      # ← 自动读取 API_HOST
-    api_port: int = 8000                            # ← 自动读取 API_PORT（自动转为 int）
-    models: ModelConfig = Field(default_factory=ModelConfig)
-    # ...
-
-settings = Settings()  # 实例化时自动加载所有配置
-```
-
-**优点**：无需手动写 `os.getenv()`，类型自动转换，缺少必填项会在启动时立即报错而非运行时崩溃。
 
 ---
 
@@ -554,6 +865,11 @@ class MySkill(BaseSkill):
     @property
     def examples(self) -> list[str]:
         return ["示例问题1", "示例问题2"]
+
+    @property
+    def tool_config(self) -> dict:
+        """可选：工具优化配置。"""
+        return {"timeout": 15.0, "parallel": True}
 
     def create_agent(self, model_provider, checkpointer=None):
         model = model_provider.get_model()
@@ -630,6 +946,10 @@ class MyCompositeSkill(BaseSkill):
 | 模型容错 | `FallbackModel([...])` | `model.with_fallbacks([...])` |
 | 工作流编排 | `pydantic-graph GraphBuilder` | `langgraph.graph.StateGraph` |
 | 依赖注入 | `deps_type=PlatformDeps` + `RunContext` | `PlatformDeps` dataclass + `app.state` |
+| 会话持久化 | 无（无状态） | `langgraph-checkpoint-sqlite` |
+| 长期记忆 | 无 | SQLite + FTS5 + 用户画像 |
+| 审计追踪 | 无 | 完整的 AuditRecord / ToolCallRecord |
+| 人机协同 | 无 | LangGraph `interrupt()` / `Command` |
 | MCP 集成 | `MCPServerStdio` / `MCPServerStreamableHTTP` | `langchain-mcp-adapters.MultiServerMCPClient` |
 
 ---
@@ -642,13 +962,23 @@ pytest tests/ -v
 
 # 运行特定测试文件
 pytest tests/test_skills.py -v
+pytest tests/test_memory.py -v
+pytest tests/test_audit.py -v
 
 # 运行特定测试类
 pytest tests/test_orchestration.py::TestEventSerialization -v
 ```
 
-测试覆盖（51 个用例）：
-- **test_skills.py** — 技能注册中心、`get_all_skills()`、checkpointer 集成、SQL 注入校验（8 种攻击场景）、工具函数
-- **test_router.py** — 路由决策模型验证、技能发现、`_build_router_prompt()` 输出、`_build_invoke_config()` session_id 行为
-- **test_orchestration.py** — 事件序列化、执行计划往返、顺序图结构验证、sentinel 终止模式
-- **test_multi_agent_router.py** — 多 Agent 模式、组合技能 compose 正常/退化路径、模型序列化往返
+测试覆盖（107 个用例）：
+
+| 文件 | 用例数 | 覆盖内容 |
+|------|--------|----------|
+| `test_skills.py` | 21 | 技能注册中心、`get_all_skills()`、checkpointer 集成、SQL 注入校验（8 种攻击场景）、工具函数 |
+| `test_router.py` | 9 | 路由决策模型验证、技能发现、`_build_router_prompt()` 输出、`_build_invoke_config()` session_id 行为 |
+| `test_orchestration.py` | 9 | 事件序列化、执行计划往返、顺序图结构验证、sentinel 终止模式 |
+| `test_multi_agent_router.py` | 9 | 多 Agent 模式、组合技能 compose 正常/退化路径、模型序列化往返 |
+| `test_memory.py` | 10 | SessionStore CRUD、FTS5 搜索、UserProfileStore 画像/偏好、数据隔离 |
+| `test_audit.py` | 8 | AuditRecord 模型、AuditStore CRUD、按技能查询、聚合统计、分页 |
+| `test_prompts.py` | 11 | 模板常量验证、LayeredPromptBuilder 缓存、分层组装、router/skill prompt |
+| `test_tools.py` | 14 | 超时控制、LangChain 工具包装、速率限制、预算管理、并行执行 |
+| `test_hitl.py` | 16 | ApprovalRequest 模型、ApprovalStore CRUD、状态流转、超时清理、HITL 事件 |

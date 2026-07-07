@@ -48,6 +48,8 @@ class OrchestrationState(TypedDict):
     subtask_results: Annotated[dict[str, str], _merge_results]
     final_result: str
     event_queue: Any
+    approval_pending: str  # 空字符串 = 无审批，否则为 approval_id
+    hitl_enabled: bool
 
 
 async def _emit(state: OrchestrationState, event: Any) -> None:
@@ -114,6 +116,75 @@ def _make_sequential_step(
 
 
 # ── 编排图构建 ──────────────────────────────────────────────────
+
+
+# ── HITL 审批门控节点 ──────────────────────────────────────
+
+
+def _make_approval_gate(
+    skill_name: str,
+    operation: str,
+):
+    """返回一个 LangGraph node 函数，在执行敏感操作前触发审批中断。
+
+    使用 LangGraph 的 interrupt() 函数挂起执行，等待外部 Command(resume=...) 恢复。
+    """
+
+    async def gate_fn(state: OrchestrationState) -> dict:
+        from langgraph.types import interrupt
+
+        if not state.get("hitl_enabled", False):
+            return {}
+
+        approval_details = f"技能 '{skill_name}' 请求执行操作: {operation}\n\n请确认是否继续？"
+        # interrupt() 会在此处挂起图执行
+        approved = interrupt(approval_details)
+
+        if not approved:
+            return {
+                "final_result": f"操作已被拒绝: {operation}",
+                "approval_pending": "rejected",
+            }
+        return {"approval_pending": ""}
+
+    return gate_fn
+
+
+# ── 编排图构建 ──────────────────────────────────────────────────
+
+
+def build_sequential_graph_with_hitl(
+    subtasks: list[SubTask],
+    skills: dict[str, BaseSkill],
+    deps: PlatformDeps,
+    sensitive_skills: list[str] | None = None,
+) -> CompiledStateGraph:
+    """构建带 HITL 审批门控的顺序执行图。
+
+    对于 sensitive_skills 列表中的技能，在执行前插入审批节点。
+    """
+    sensitive = set(sensitive_skills or [])
+
+    builder = StateGraph(OrchestrationState)
+
+    prev_name = START
+    for i, st in enumerate(subtasks):
+        # 如果技能需要审批，先插入审批门控节点
+        if st.skill_name in sensitive:
+            gate_name = f"approval_{st.id}"
+            gate_fn = _make_approval_gate(st.skill_name, st.description)
+            builder.add_node(gate_name, gate_fn)
+            builder.add_edge(prev_name, gate_name)
+            prev_name = gate_name
+
+        node_fn = _make_sequential_step(st, skills, deps, include_previous=(i > 0))
+        step_name = f"step_{st.id}"
+        builder.add_node(step_name, node_fn)
+        builder.add_edge(prev_name, step_name)
+        prev_name = step_name
+
+    builder.add_edge(prev_name, END)
+    return builder.compile()
 
 
 def build_sequential_graph(

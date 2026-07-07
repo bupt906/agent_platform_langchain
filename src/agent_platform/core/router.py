@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+import time
 from typing import TYPE_CHECKING, Literal
 
 from langchain_core.messages import HumanMessage, SystemMessage
@@ -26,6 +27,10 @@ class RouterDecision(BaseModel):
 
 
 def _build_router_prompt(deps: PlatformDeps) -> str:
+    # 优先使用分层 builder，回退到原有拼接逻辑
+    if deps.prompt_builder:
+        return deps.prompt_builder.build_router_prompt(deps.skill_registry)
+
     skills = deps.skill_registry.list_skills()
     skill_descriptions = []
     for s in skills:
@@ -88,24 +93,68 @@ async def execute_decision(
 ) -> str:
     """执行路由决策，返回最终回复文本。"""
     invoke_cfg = _build_invoke_config(session_id)
+    start_time = time.monotonic()
+    reply = ""
+    error = None
 
-    if decision.mode == "multi" and decision.execution_plan:
-        engine = OrchestrationEngine(deps)
-        return await engine.execute(message, decision.execution_plan)
+    try:
+        if decision.mode == "multi" and decision.execution_plan:
+            engine = OrchestrationEngine(deps)
+            reply = await engine.execute(message, decision.execution_plan)
+        else:
+            skill = deps.skill_registry.get(decision.skill_name)
+            if skill:
+                skills = deps.skill_registry.get_all_skills()
+                agent = skill.compose(skills, deps.model_provider) or skill.create_agent(
+                    deps.model_provider, checkpointer=deps.checkpointer
+                )
+                result = await agent.ainvoke(
+                    {"messages": [HumanMessage(content=decision.rewritten_query)]},
+                    config=invoke_cfg,
+                )
+                reply = result["messages"][-1].content
+            else:
+                reply = await _general_response(message, deps, model_id, invoke_cfg)
+    except Exception as e:
+        error = str(e)
+        logger.error("决策执行失败: %s", error, exc_info=True)
+        reply = f"抱歉，处理请求时出现错误: {error}"
 
-    skill = deps.skill_registry.get(decision.skill_name)
-    if skill:
-        skills = deps.skill_registry.get_all_skills()
-        agent = skill.compose(skills, deps.model_provider) or skill.create_agent(
-            deps.model_provider, checkpointer=deps.checkpointer
-        )
-        result = await agent.ainvoke(
-            {"messages": [HumanMessage(content=decision.rewritten_query)]},
-            config=invoke_cfg,
-        )
-        return result["messages"][-1].content
+    # ── 持久化对话记录 ──
+    if deps.session_store and session_id:
+        try:
+            await deps.session_store.add_turn(
+                session_id=session_id,
+                user_message=message,
+                assistant_message=reply,
+                skill_used=decision.skill_name,
+                tokens_used=0,
+                duration_ms=(time.monotonic() - start_time) * 1000,
+            )
+        except Exception:
+            logger.warning("持久化对话记录失败", exc_info=True)
 
-    return await _general_response(message, deps, model_id, invoke_cfg)
+    # ── 审计日志 ──
+    if deps.audit_store:
+        try:
+            from agent_platform.audit.schema import AuditRecord
+
+            await deps.audit_store.record(
+                AuditRecord(
+                    session_id=session_id,
+                    agent_type=f"skill:{decision.skill_name}" if decision.skill_name not in ("general", "multi_agent") else decision.skill_name,
+                    user_message=message,
+                    assistant_message=reply,
+                    duration_ms=(time.monotonic() - start_time) * 1000,
+                    skill_used=decision.skill_name,
+                    router_confidence=decision.confidence,
+                    error=error,
+                )
+            )
+        except Exception:
+            logger.warning("审计日志记录失败", exc_info=True)
+
+    return reply
 
 
 async def execute_skill_direct(
@@ -122,15 +171,60 @@ async def execute_skill_direct(
     if not skill:
         return f"未找到技能: {skill_name}"
 
-    skills = deps.skill_registry.get_all_skills()
-    agent = skill.compose(skills, deps.model_provider) or skill.create_agent(
-        deps.model_provider, checkpointer=deps.checkpointer
-    )
-    result = await agent.ainvoke(
-        {"messages": [HumanMessage(content=message)]},
-        config=invoke_cfg,
-    )
-    return result["messages"][-1].content
+    start_time = time.monotonic()
+    reply = ""
+    error = None
+
+    try:
+        skills = deps.skill_registry.get_all_skills()
+        agent = skill.compose(skills, deps.model_provider) or skill.create_agent(
+            deps.model_provider, checkpointer=deps.checkpointer
+        )
+        result = await agent.ainvoke(
+            {"messages": [HumanMessage(content=message)]},
+            config=invoke_cfg,
+        )
+        reply = result["messages"][-1].content
+    except Exception as e:
+        error = str(e)
+        logger.error("技能直接调用失败: %s", error, exc_info=True)
+        reply = f"抱歉，处理请求时出现错误: {error}"
+
+    duration_ms = (time.monotonic() - start_time) * 1000
+
+    # ── 持久化对话记录 ──
+    if deps.session_store and session_id:
+        try:
+            await deps.session_store.add_turn(
+                session_id=session_id,
+                user_message=message,
+                assistant_message=reply,
+                skill_used=skill_name,
+                duration_ms=duration_ms,
+            )
+        except Exception:
+            logger.warning("持久化对话记录失败", exc_info=True)
+
+    # ── 审计日志 ──
+    if deps.audit_store:
+        try:
+            from agent_platform.audit.schema import AuditRecord
+
+            await deps.audit_store.record(
+                AuditRecord(
+                    session_id=session_id,
+                    agent_type=f"skill:{skill_name}",
+                    user_message=message,
+                    assistant_message=reply,
+                    duration_ms=duration_ms,
+                    skill_used=skill_name,
+                    error=error,
+                )
+            )
+        except Exception:
+            logger.warning("审计日志记录失败", exc_info=True)
+
+    return reply
 
 
 def _build_invoke_config(session_id: str | None) -> dict:
