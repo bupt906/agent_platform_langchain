@@ -6,12 +6,10 @@
 
 ## 目录
 
-- [核心技术栈](#核心技术栈)
 - [项目结构](#项目结构)
 - [快速开始](#快速开始)
 - [环境变量配置](#环境变量配置)
 - [API 接口文档](#api-接口文档)
-- [内置技能详解](#内置技能详解)
 - [多 Agent 编排模式](#多-agent-编排模式)
 - [LLM 意图路由](#llm-意图路由)
 - [技能手册系统](#技能手册系统)
@@ -24,35 +22,6 @@
 - [配置管理说明](#配置管理说明)
 - [添加新技能](#添加新技能)
 - [添加组合技能](#添加组合技能)
-- [技术栈映射（与 PydanticAI 版对照）](#技术栈映射与-pydanticai-版对照)
-- [测试](#测试)
-
----
-
-## 核心技术栈
-
-| 层级 | 技术 | 说明 |
-|------|------|------|
-| Agent 框架 | LangChain 1.x + LangGraph 1.x | Agent 抽象、工具绑定、对话管理 |
-| 工具调用 | `@langchain_core.tools.tool` | 将 Python 函数声明为 Agent 可调用的工具 |
-| Agent 构建 | `langchain.agents.create_agent` | 预构建的 ReAct（Reasoning + Acting）Agent |
-| 编排引擎 | `langgraph.graph.StateGraph` | 基于有限状态机的多 Agent 工作流编排 |
-| 结构化输出 | `ChatModel.with_structured_output()` | 让 LLM 输出符合 Pydantic Schema 的结构化数据 |
-| 模型容错 | `ChatModel.with_fallbacks()` | 主模型失败时自动切换到备用模型 |
-| 持久化记忆 | SQLite + FTS5 | 对话历史持久化、全文搜索、用户画像 |
-| 检查点 | `langgraph-checkpoint-sqlite` | LangGraph 状态持久化，服务重启不丢失 |
-| 审计日志 | SQLite | 每次 Agent 调用的完整审计追踪 |
-| HITL | LangGraph `interrupt()` / `Command` | 人机协同审批、动态重规划 |
-| Prompt 分层 | `LayeredPromptBuilder` | 三层架构优化 Provider 端 Prompt 缓存命中率 |
-| Tool 优化 | 超时控制 / 令牌桶限流 / 预算管理 | 工具调用的可靠性保障 |
-| MCP 集成 | `langchain-mcp-adapters` 0.3+ | 将 MCP Server 的工具转换为 LangChain 工具 |
-| Web 框架 | FastAPI 0.115+ | 异步 REST API 框架 |
-| 流式输出 | SSE-Starlette 3.x | Server-Sent Events 流式推送 |
-| 配置管理 | pydantic-settings 2.x | 从环境变量 / `.env` 文件自动加载配置 |
-| HTTP 客户端 | httpx 0.27+ | 异步 HTTP 请求 |
-| 安全 | Bearer Token + 滑动窗口限流 | API 认证与速率限制 |
-| 技能手册 | Markdown + YAML frontmatter | 领域操作手册的加载、匹配与 prompt 注入 |
-| 可观测性 | 请求日志中间件 | 请求耗时统计 |
 
 ---
 
@@ -66,10 +35,10 @@ agent_platform_langchain/
 │
 ├── src/agent_platform/
 │   ├── config/
-│   │   └── settings.py             # 配置管理（pydantic-settings）
+│   │   └── settings.py             # 配置管理
 │   │
 │   ├── models/
-│   │   └── provider.py             # 多模型适配器（DeepSeek/Qwen/Ollama/OpenAI）
+│   │   └── provider.py             # 多模型适配器
 │   │
 │   ├── memory/                     # 持久化记忆系统
 │   │   ├── session_store.py        #   会话持久化 + FTS5 全文搜索
@@ -77,12 +46,12 @@ agent_platform_langchain/
 │   │   └── user_profile.py         #   用户画像存储
 │   │
 │   ├── audit/                      # 审计日志
-│   │   ├── schema.py               #   AuditRecord / ToolCallRecord 模型
+│   │   ├── schema.py        
 │   │   └── store.py                #   审计存储 + 聚合统计
 │   │
 │   ├── prompts/                    # Prompt 分层缓存
 │   │   ├── templates.py            #   可复用模板常量
-│   │   └── builder.py              #   LayeredPromptBuilder
+│   │   └── builder.py             
 │   │
 │   ├── tools/                      # Tool 优化
 │   │   ├── timeout.py              #   工具超时控制
@@ -91,21 +60,21 @@ agent_platform_langchain/
 │   │   └── parallel.py             #   并行工具执行
 │   │
 │   ├── hitl/                       # Human-in-the-Loop
-│   │   ├── types.py                #   ApprovalRequest 等数据模型
+│   │   ├── types.py                
 │   │   ├── store.py                #   审批请求持久化
 │   │   └── events.py               #   HITL SSE 事件
 │   │
 │   ├── agents/                     # Agent 插件目录（自动发现）
 │   │   ├── base.py                 # Agent 基类 BaseSkill
-│   │   ├── qa/                     # 知识问答 Agent (RAG)
-│   │   │   ├── skill.py            #   Agent 定义 + 系统提示词
-│   │   │   └── tools.py            #   知识库检索工具
-│   │   ├── data_query/             # 自然语言问数 Agent (Text-to-SQL)
-│   │   │   ├── skill.py            #   Agent 定义 + 系统提示词
-│   │   │   └── tools.py            #   SQL 执行 / 表结构查询工具
+│   │   ├── qa/                     # 问答 Agent
+│   │   │   ├── skill.py            
+│   │   │   └── tools.py            
+│   │   ├── data_query/             # 问数 Agent
+│   │   │   ├── skill.py           
+│   │   │   └── tools.py            
 │   │   ├── contract_review/        # 合同审查 Agent
-│   │   │   ├── skill.py            #   Agent 定义 + 系统提示词
-│   │   │   └── tools.py            #   条款解析 / 风险检查 / 评估工具
+│   │   │   ├── skill.py            
+│   │   │   └── tools.py            
 │   │   └── composite/              # 组合 Agent（数据 + 合同审查）
 │   │       └── skill.py            #   编排多个子 Agent
 │   │
@@ -116,14 +85,14 @@ agent_platform_langchain/
 │   │   └── pdf.md                   #   PDF 操作手册
 │   │
 │   ├── core/
-│   │   ├── deps.py                 # 全局依赖容器 PlatformDeps
-│   │   ├── registry.py             # 技能注册中心 SkillRegistry
+│   │   ├── deps.py                 # 全局依赖容器
+│   │   ├── registry.py             # 技能注册中心
 │   │   └── router.py               # LLM 意图路由器
 │   │
 │   ├── graph/
 │   │   ├── events.py               # 编排事件定义（含 HITL 事件）
-│   │   ├── patterns.py             # 编排模式（Sequential/Parallel/Orchestrator + HITL）
-│   │   ├── orchestration.py        # 编排引擎 OrchestrationEngine
+│   │   ├── patterns.py             # 编排模式
+│   │   ├── orchestration.py        # 编排引擎
 │   │   └── workflows.py            # 示例工作流（合同审查流水线）
 │   │
 │   ├── mcp_servers/
@@ -133,23 +102,8 @@ agent_platform_langchain/
 │       ├── app.py                  # FastAPI 应用入口 + lifespan + 中间件注册
 │       ├── middleware.py            # 认证 / 限流 / 可观测性中间件
 │       ├── schemas.py              # 请求/响应 Pydantic 模型
-│       └── routes/
-│           ├── chat.py             # /chat 和 /chat/stream 端点
-│           ├── skills.py           # /skills 端点
-│           ├── audit.py            # /audit 审计日志端点
-│           └── hitl.py             # /hitl 人机协同端点
-│
-└── tests/                          # 测试套件（107 个测试）
-    ├── conftest.py                 # Pytest Fixtures
-    ├── test_skills.py              # 技能注册 + 工具函数 + SQL 注入校验测试
-    ├── test_router.py              # 路由决策 + 路由 prompt 构建 + invoke config 测试
-    ├── test_orchestration.py       # 事件序列化 + 执行计划 + sentinel 模式测试
-    ├── test_multi_agent_router.py  # 多 Agent 模式 + 组合技能 compose 测试
-    ├── test_memory.py              # 持久化记忆测试
-    ├── test_audit.py               # 审计日志测试
-    ├── test_prompts.py             # Prompt 分层缓存测试
-    ├── test_tools.py               # Tool 优化测试
-    └── test_hitl.py                # HITL 人机协同测试
+│       └── routes/                  # 接口
+└── tests/                          # 测试
 ```
 
 ---
@@ -173,7 +127,7 @@ pip install -e ".[dev]"
 cp .env.example .env
 ```
 
-编辑 `.env`，至少填入一个模型提供商的 API Key：
+编辑 `.env`，至少填入一个模型的 API Key：
 
 ```env
 DEFAULT_MODEL=deepseek:deepseek-chat
@@ -356,7 +310,7 @@ data: {"type": "approval_result", "approval_id": "a1b2c3", "status": "approved"}
 
 ---
 
-### GET `/skills` — 列出所有技能
+### GET `/skills` — 列出所有技能（单agent）
 
 **响应示例**：
 
@@ -478,52 +432,6 @@ curl -X POST http://localhost:8000/chat \
 
 ---
 
-## 内置技能详解
-
-### qa — 通用知识问答 (RAG)
-
-基于检索增强生成(RAG)模式的知识问答。Agent 先调用知识库检索工具获取相关文档片段，再基于检索结果生成回答。
-
-| 项目 | 说明 |
-|------|------|
-| 工具 | `search_knowledge(query, top_k)` — 检索知识库 |
-| 适用场景 | 企业制度查询、技术文档检索、FAQ 问答 |
-| 待接入 | Milvus / Elasticsearch 向量检索引擎 |
-
-### data_query — 自然语言问数 (Text-to-SQL)
-
-将用户的自然语言问题转换为 SQL 查询，执行后用通俗语言解读结果。
-
-| 项目 | 说明 |
-|------|------|
-| 工具 | `query_table_schema(table_name)` — 查看表结构 |
-|      | `run_sql_query(sql)` — 执行 SELECT 查询 |
-| 安全机制 | 多层 SQL 校验：注释移除 → 多语句检测 → SELECT 关键字白名单 |
-| 内置表 | users, orders, products |
-| 待接入 | 真实数据库连接池 |
-
-### contract_review — 智能合同审查
-
-解析合同文本、逐条检查法律风险、给出整体评估和修改建议。
-
-| 项目 | 说明 |
-|------|------|
-| 工具 | `extract_clauses(contract_text)` — 提取合同条款 |
-|      | `review_clause(clause_text)` — 单条款风险审查 |
-|      | `overall_risk_assessment(findings)` — 整体风险评估 |
-| 审查要点 | 标的明确性、价款合理性、违约对等性、免责条款、保密条款 |
-| 待接入 | 法律 NLP 模型 + 法律知识库规则引擎 |
-
-### data_contract_review — 数据驱动合同审查（组合技能）
-
-这是一个**组合技能**，依赖 `data_query` 和 `contract_review` 两个原子技能。它创建一个编排 Agent，内部调用两个子 Agent 的能力：
-
-1. 先通过数据查询验证合同相关数据（金额、供应商历史等）
-2. 再对合同条款进行风险审查
-3. 将数据验证结果与条款审查结果交叉验证，生成综合报告
-
----
-
 ## 多 Agent 编排模式
 
 当用户问题需要多个技能协同时，路由器会生成 `ExecutionPlan`，编排引擎根据计划选择以下模式之一：
@@ -592,7 +500,7 @@ class RouterDecision(BaseModel):
 
 ---
 
-## 技能手册系统
+## 技能手册系统（skills）
 
 ### 概念
 
@@ -604,27 +512,6 @@ class RouterDecision(BaseModel):
 | 内容 | Python 代码 + LangGraph + 工具 | Markdown 流程 + 命令模板 + 脚本 |
 | 行为 | 自动推理、调用工具 | 被载入上下文，指导 LLM 执行 |
 | 例子 | `contract_review` 自动审查合同 | "怎么生成 PPT"、"飞书发消息的套路" |
-
-### 手册格式
-
-Markdown + YAML frontmatter，放在 `skill_manuals/` 目录下：
-
-```markdown
----
-name: ppt
-description: PowerPoint 操作指南
-keywords: [PPT, PowerPoint, 幻灯片, 演示文稿]
----
-
-# PowerPoint 操作指南
-
-## 创建新演示文稿
-```python
-from pptx import Presentation
-prs = Presentation()
-...
-```
-```
 
 ### 路由匹配
 
@@ -646,7 +533,6 @@ prs = Presentation()
 
 1. **丢文件**（最简单）—— 把 `.md` 手册文件放到 `skill_manuals/` 目录，重启生效
 2. **调 API**（动态）—— `PUT /skill-manuals/xxx` 注册，无需重启
-3. **外部路径**—— 改 `SKILL_MANUAL_PATH=/team/shared_manuals/` 指向共享目录
 
 ---
 
@@ -894,32 +780,7 @@ invalidate_mcp_cache()
 
 ---
 
-## 配置管理说明
-
-本项目使用 **pydantic-settings** 进行配置管理。
-
-### pydantic-settings 是什么？
-
-[pydantic-settings](https://docs.pydantic.dev/latest/concepts/pydantic_settings/) 是 Pydantic 生态的一个独立库，它扩展了 Pydantic 的 `BaseModel`，提供了一个 `BaseSettings` 基类。核心能力是**自动从多种来源加载配置值**，按以下优先级（从高到低）：
-
-1. **构造函数参数** — 代码中直接传入的值
-2. **环境变量** — 系统环境变量（如 `export DEEPSEEK_API_KEY=sk-xxx`）
-3. **`.env` 文件** — 项目根目录的 `.env` 文件中的键值对
-4. **默认值** — 类定义中的 `default` / `default_factory`
-
-### 它与普通 Pydantic BaseModel 的区别
-
-| 特性 | `BaseModel` | `BaseSettings` |
-|------|-------------|----------------|
-| 数据来源 | 必须手动传入 | 自动读取环境变量 + `.env` 文件 |
-| 类型验证 | 有 | 有（完全相同） |
-| 环境变量映射 | 无 | 字段名自动映射为大写环境变量名 |
-| `.env` 文件支持 | 无 | 内置支持 |
-| 适用场景 | API 请求体、数据模型 | 应用配置、密钥管理 |
-
----
-
-## 添加新技能
+## 添加新技能（agent）
 
 只需 3 个文件，无需修改任何配置——`SkillRegistry.auto_discover()` 会自动扫描并注册。
 
@@ -934,155 +795,14 @@ src/agent_platform/agents/my_agent/
 
 ### 2. 实现工具函数 (`tools.py`)
 
-```python
-async def my_domain_tool(query: str) -> list[dict]:
-    """你的领域工具，接入外部 API / 数据库 / 模型等。"""
-    # TODO: 替换为真实实现
-    return [{"result": f"关于 {query} 的结果"}]
-```
-
 ### 3. 实现技能类 (`skill.py`)
-
-```python
-from langchain_core.tools import tool
-from langchain.agents import create_agent
-from agent_platform.agents.base import BaseSkill
-from .tools import my_domain_tool
-
-SYSTEM_PROMPT = "你是一个 XX 领域的专业助手。..."
-
-@tool
-async def domain_search(query: str) -> str:
-    """工具描述（LLM 会看到这段文字来决定是否调用）。"""
-    results = await my_domain_tool(query)
-    return str(results)
-
-class MySkill(BaseSkill):
-    @property
-    def name(self) -> str:
-        return "my_skill"
-
-    @property
-    def description(self) -> str:
-        return "我的技能描述（路由器会看到这段文字来决定是否路由到此技能）"
-
-    @property
-    def examples(self) -> list[str]:
-        return ["示例问题1", "示例问题2"]
-
-    @property
-    def tool_config(self) -> dict:
-        """可选：工具优化配置。"""
-        return {"timeout": 15.0, "parallel": True}
-
-    def create_agent(self, model_provider, checkpointer=None):
-        model = model_provider.get_model()
-        return create_agent(model, [domain_search], system_prompt=SYSTEM_PROMPT, checkpointer=checkpointer)
-
-skill = MySkill()
-```
 
 ### 4. 导出 (`__init__.py`)
 
-```python
-from .skill import skill
-__all__ = ["skill"]
-```
-
-重启服务后，新技能自动出现在 `/skills` 列表中，路由器也能自动将相关问题分发到这个技能。
+重启服务后，路由器能自动将相关问题分发到这个技能。
 
 ---
 
 ## 添加组合技能
 
-组合技能通过 `compose()` 方法编排多个子 Agent，实现跨技能协作：
-
-```python
-class MyCompositeSkill(BaseSkill):
-    @property
-    def dependencies(self) -> list[str]:
-        return ["skill_a", "skill_b"]
-
-    def create_agent(self, model_provider):
-        # 退化模式（依赖不可用时的降级方案）
-        return create_agent(model_provider.get_model(), [], system_prompt="...")
-
-    def compose(self, skills, model_provider):
-        skill_a = skills.get("skill_a")
-        skill_b = skills.get("skill_b")
-        if not skill_a or not skill_b:
-            return None  # 返回 None 触发退化到 create_agent()
-
-        agent_a = skill_a.create_agent(model_provider)
-        agent_b = skill_b.create_agent(model_provider)
-
-        @tool
-        async def call_a(query: str) -> str:
-            """调用技能 A"""
-            result = await agent_a.ainvoke({"messages": [HumanMessage(content=query)]})
-            return result["messages"][-1].content
-
-        @tool
-        async def call_b(query: str) -> str:
-            """调用技能 B"""
-            result = await agent_b.ainvoke({"messages": [HumanMessage(content=query)]})
-            return result["messages"][-1].content
-
-        model = model_provider.get_model()
-        return create_agent(model, [call_a, call_b], system_prompt="编排提示词...")
-```
-
----
-
-## 技术栈映射（与 PydanticAI 版对照）
-
-本项目从 PydanticAI 版重写而来，以下是关键组件的对照表：
-
-| 功能 | PydanticAI 版 | LangChain 版 |
-|------|--------------|-------------|
-| Agent 创建 | `pydantic_ai.Agent(model, system_prompt)` | `create_agent(model, tools, system_prompt)` |
-| 工具注册 | `@agent.tool_plain` 装饰器 | `@langchain_core.tools.tool` 装饰器 |
-| 工具执行 | Agent 内部自动管理 | LangGraph ReAct 循环自动管理 |
-| 同步调用 | `await agent.run(message)` | `await agent.ainvoke({"messages": [...]})` |
-| 流式调用 | `async with agent.run_stream()` | `agent.astream_events(..., version="v2")` |
-| 结构化输出 | `Agent(output_type=Schema)` | `model.with_structured_output(Schema)` |
-| 模型抽象 | `OpenAIChatModel` + 各 Provider | `ChatOpenAI` + `base_url` 参数 |
-| 模型容错 | `FallbackModel([...])` | `model.with_fallbacks([...])` |
-| 工作流编排 | `pydantic-graph GraphBuilder` | `langgraph.graph.StateGraph` |
-| 依赖注入 | `deps_type=PlatformDeps` + `RunContext` | `PlatformDeps` dataclass + `app.state` |
-| 会话持久化 | 无（无状态） | `langgraph-checkpoint-sqlite` |
-| 长期记忆 | 无 | SQLite + FTS5 + 用户画像 |
-| 审计追踪 | 无 | 完整的 AuditRecord / ToolCallRecord |
-| 人机协同 | 无 | LangGraph `interrupt()` / `Command` |
-| MCP 集成 | `MCPServerStdio` / `MCPServerStreamableHTTP` | `langchain-mcp-adapters.MultiServerMCPClient` |
-
----
-
-## 测试
-
-```bash
-# 运行全部测试
-pytest tests/ -v
-
-# 运行特定测试文件
-pytest tests/test_skills.py -v
-pytest tests/test_memory.py -v
-pytest tests/test_audit.py -v
-
-# 运行特定测试类
-pytest tests/test_orchestration.py::TestEventSerialization -v
-```
-
-测试覆盖（107 个用例）：
-
-| 文件 | 用例数 | 覆盖内容 |
-|------|--------|----------|
-| `test_skills.py` | 21 | 技能注册中心、`get_all_skills()`、checkpointer 集成、SQL 注入校验（8 种攻击场景）、工具函数 |
-| `test_router.py` | 9 | 路由决策模型验证、技能发现、`_build_router_prompt()` 输出、`_build_invoke_config()` session_id 行为 |
-| `test_orchestration.py` | 9 | 事件序列化、执行计划往返、顺序图结构验证、sentinel 终止模式 |
-| `test_multi_agent_router.py` | 9 | 多 Agent 模式、组合技能 compose 正常/退化路径、模型序列化往返 |
-| `test_memory.py` | 10 | SessionStore CRUD、FTS5 搜索、UserProfileStore 画像/偏好、数据隔离 |
-| `test_audit.py` | 8 | AuditRecord 模型、AuditStore CRUD、按技能查询、聚合统计、分页 |
-| `test_prompts.py` | 11 | 模板常量验证、LayeredPromptBuilder 缓存、分层组装、router/skill prompt |
-| `test_tools.py` | 14 | 超时控制、LangChain 工具包装、速率限制、预算管理、并行执行 |
-| `test_hitl.py` | 16 | ApprovalRequest 模型、ApprovalStore CRUD、状态流转、超时清理、HITL 事件 |
+组合技能通过 `compose()` 方法编排多个子 Agent，实现跨技能协作
