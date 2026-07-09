@@ -12,16 +12,14 @@
 - [API 接口文档](#api-接口文档)
 - [多 Agent 编排模式](#多-agent-编排模式)
 - [LLM 意图路由](#llm-意图路由)
-- [技能手册系统](#技能手册系统)
+- [声明式 Skills 系统（skills/）](#声明式-skills-系统skills)
 - [持久化记忆系统](#持久化记忆系统)
 - [审计日志与追踪](#审计日志与追踪)
 - [Prompt 分层缓存](#prompt-分层缓存)
 - [Tool 优化](#tool-优化)
 - [Human-in-the-Loop（人机协同）](#human-in-the-loop人机协同)
 - [MCP Server 集成](#mcp-server-集成)
-- [配置管理说明](#配置管理说明)
-- [添加新技能](#添加新技能)
-- [添加组合技能](#添加组合技能)
+- [添加新agent（编码方式）](#添加新agent编码方式)
 
 ---
 
@@ -53,11 +51,15 @@ agent_platform_langchain/
 │   │   ├── templates.py            #   可复用模板常量
 │   │   └── builder.py             
 │   │
-│   ├── tools/                      # Tool 优化
+│   ├── tools/                      # Tool 运行时
 │   │   ├── timeout.py              #   工具超时控制
 │   │   ├── rate_limiter.py         #   令牌桶速率限制
 │   │   ├── budget.py               #   工具调用预算管理
-│   │   └── parallel.py             #   并行工具执行
+│   │   ├── parallel.py             #   并行工具执行
+│   │   ├── registry.py             #   全局工具注册表
+│   │   ├── python_exec.py          #   execute_python 沙箱
+│   │   ├── data_tools.py           #   load_data + session 隔离
+│   │   └── data_store.py           #   数据存储（内存）
 │   │
 │   ├── hitl/                       # Human-in-the-Loop
 │   │   ├── types.py                
@@ -79,11 +81,13 @@ agent_platform_langchain/
 │   │   ├── technical.md            #   专业技术知识库
 │   │   └── mining.md               #   矿山适配知识库
 │   │
-│   ├── skill_manuals/              # 技能手册目录（操作指南型）
-│   │   ├── loader.py                #   手册加载 / 解析 / 关键词匹配
-│   │   ├── ppt.md                   #   PowerPoint 操作手册
-│   │   ├── feishu.md                #   飞书操作手册
-│   │   └── pdf.md                   #   PDF 操作手册
+│   ├── skills/                     # 声明式 Skill 目录（SKILL.md 定义）
+│   │   ├── registry.py              #   DeclarativeSkillRegistry
+│   │   ├── builder.py               #   build_skill_agent()
+│   │   ├── complete.py              #   complete_xxx 工具
+│   │   ├── ppt/SKILL.md             #   PowerPoint 操作 Skill
+│   │   ├── feishu/SKILL.md          #   飞书操作 Skill
+│   │   └── pdf/SKILL.md             #   PDF 操作 Skill
 │   │
 │   ├── core/
 │   │   ├── deps.py                 # 全局依赖容器
@@ -149,22 +153,27 @@ uvicorn agent_platform.api.app:app --reload --host 0.0.0.0 --port 8000
 ### 4. 测试对话
 
 ```bash
-# 同步对话（自动路由）
+# 自动路由（LLM 判断意图）
 curl -X POST http://localhost:8000/chat \
   -H "Content-Type: application/json" \
   -d '{"message": "公司的请假制度是什么？"}'
 
-# 指定技能
+# 指定 Python Agent（agents/ 目录）
 curl -X POST http://localhost:8000/chat \
   -H "Content-Type: application/json" \
-  -d '{"message": "上个月销售额是多少？", "skill": "data_query"}'
+  -d '{"agent": "data_query", "message": "上个月销售额是多少？"}'
+
+# 指定声明式 Skill（skills/ 目录）
+curl -X POST http://localhost:8000/chat \
+  -H "Content-Type: application/json" \
+  -d '{"skill": "ppt", "message": "做一个公司介绍PPT"}'
 
 # SSE 流式对话
 curl -N -X POST http://localhost:8000/chat/stream \
   -H "Content-Type: application/json" \
   -d '{"message": "帮我审查这份合同"}'
 
-# 查看所有技能
+# 查看所有 Agent 列表
 curl http://localhost:8000/skills
 
 # 查询审计日志
@@ -199,8 +208,9 @@ curl http://localhost:8000/hitl/approvals
 | `MAX_RETRIES` | `2` | 模型请求失败重试次数 |
 | `API_KEY` | (空) | API 认证密钥，为空则不启用认证 |
 | `RATE_LIMIT_PER_MINUTE` | `60` | 每 IP 每分钟最大请求数，0 = 不限 |
-| `SKILL_MANUAL_PATH` | `skill_manuals` | 技能手册 .md 文件目录（相对于 `agent_platform` package） |
-| `SKILL_MANUAL_ENABLED` | `true` | 是否启用技能手册匹配 |
+| `DECLARATIVE_SKILLS_ENABLED` | `true` | 是否启用声明式 Skill 系统 |
+| `DECLARATIVE_SKILLS_MAX_TOOL_CALLS` | `10` | 单个 Skill 的工具调用上限 |
+| `PYTHON_SANDBOX_TIMEOUT` | `30` | execute_python 沙箱超时秒数 |
 | `MEMORY_DB_PATH` | `memory.db` | 记忆数据库路径 |
 | `MEMORY_RETENTION_DAYS` | `90` | 对话历史保留天数 |
 | `AUTO_SUMMARIZE_THRESHOLD` | `10` | 触发自动摘要的轮次阈值 |
@@ -234,11 +244,14 @@ curl http://localhost:8000/hitl/approvals
 ```json
 {
   "message": "用户问题",
-  "skill": "qa",                // 可选，指定技能名称；省略则自动路由
+  "agent": "qa",                 // 可选，指定 Python Agent（agents/ 目录）；省略则自动路由
+  "skill": "ppt",                // 可选，指定声明式 Skill（skills/ 目录）；省略则自动路由
   "model": "deepseek:deepseek-chat", // 可选，指定模型；省略使用默认模型
-  "session_id": "abc123"        // 可选，会话 ID，用于多轮对话记忆
+  "session_id": "abc123"         // 可选，会话 ID，用于多轮对话记忆
 }
 ```
+
+`agent` 和 `skill` 二选一，同时指定时 `agent` 优先。都不填则 LLM 自动路由。
 
 **响应体 (ChatResponse)**：
 
@@ -336,40 +349,6 @@ data: {"type": "approval_result", "approval_id": "a1b2c3", "status": "approved"}
     }
   ],
   "total": 4
-}
-```
-
-### 技能手册 API
-
-| 端点 | 方法 | 说明 |
-|------|------|------|
-| `/skill-manuals` | `GET` | 列出所有已加载的操作手册 |
-| `/skill-manuals/{name}` | `GET` | 查看指定手册完整内容 |
-| `/skill-manuals/{name}` | `PUT` | 动态注册 / 更新手册（无需重启） |
-| `/skill-manuals/{name}` | `DELETE` | 删除手册 |
-| `/skill-manuals/reload` | `POST` | 从磁盘目录重新加载所有手册 |
-
-**`GET /skill-manuals` 响应示例**：
-
-```json
-{
-  "manuals": [
-    {"name": "ppt", "description": "PowerPoint 操作指南", "keywords": ["PPT", "PowerPoint", "幻灯片"]},
-    {"name": "feishu", "description": "飞书操作指南", "keywords": ["飞书", "Feishu", "消息", "通知"]},
-    {"name": "pdf", "description": "PDF 操作指南", "keywords": ["PDF", "导出", "打印"]}
-  ],
-  "total": 3
-}
-```
-
-**`PUT /skill-manuals/xxx` 请求体**：
-
-```json
-{
-  "name": "excel",
-  "description": "Excel 操作指南",
-  "keywords": ["Excel", "表格", "CSV", "xlsx"],
-  "content": "# Excel 操作指南\n\n## 读写 Excel\n使用 openpyxl 库：\n```python\nfrom openpyxl import Workbook\n...\n```"
 }
 ```
 
@@ -499,56 +478,80 @@ LLM 先将问题分解为子任务，再并行执行所有子任务，最后综�
 
 ## LLM 意图路由
 
-路由器是一个使用结构化输出的 LLM 调用，输入用户问题，输出 `RouterDecision`：
+路由器的系统提示词包含所有已注册 Agent 和声明式 Skill 的名称与描述，LLM 据此分析用户意图，输出结构化路由决策。
+
+### 路由决策
 
 ```python
 class RouterDecision(BaseModel):
-    skill_name: str          # 目标技能名（"multi_agent" 表示多技能模式，"general" 表示无匹配）
-    rewritten_query: str     # 优化改写后的查询（更适合目标技能处理）
+    skill_name: str          # 目标名：Agent 名 / 声明式 Skill 名 / "multi_agent" / "general"
+    rewritten_query: str     # 优化改写后的查询
     confidence: float        # 置信度 0.0 ~ 1.0
-    mode: "single" | "multi" # 执行模式
-    execution_plan: ExecutionPlan | None  # 多 Agent 模式的执行计划
+    mode: "single" | "multi" # single = 单一执行，multi = 多 Agent 编排
+    execution_plan: ExecutionPlan | None  # mode=multi 时的执行计划
 ```
 
-路由器的系统提示词中包含所有已注册技能的名称、描述、示例问题和依赖关系，使 LLM 能够做出准确的路由判断。
+### 执行流程
 
-当用户意图不匹配任何 Agent（路由为 `general`）时，路由器会自动检查技能手册匹配——如果命中，则将手册全文注入 system prompt，让 LLM 严格按手册指导执行。
+用户可通过 `agent` 或 `skill` 参数显式指定目标，也可全空走自动路由：
+
+```
+POST /chat
+    ├── "agent": "qa"       → execute_skill_direct() → agents/qa
+    ├── "skill": "ppt"      → _execute_declarative_skill_direct() → skills/ppt
+    │
+    └── 两者都空（自动路由）
+        resolve_route() → RouterDecision
+            ↓
+        execute_decision()
+            ├── mode="multi" + execution_plan → OrchestrationEngine 编排执行
+            │
+            └── mode="single" → 按 skill_name 查：
+                ├── agents/ 中的 Python Agent → compose() 或 create_agent()
+                ├── skills/ 中的声明式 Skill → build_skill_agent()
+                └── 都不匹配 → general 通用回复
+```
+
+### 三层查找优先级
+
+1. **Python Agent**（`agents/`）— 有 `create_agent()` 的硬编码 Agent
+2. **声明式 Skill**（`skills/`）— 有 `SKILL.md` 的动态构建 Agent
+3. **通用回复** — LLM 直接回答
 
 ---
 
-## 技能手册系统（skills）
+## 声明式 Skills 系统（`skills/`）
 
 ### 概念
 
-技能手册与 Agent 不同：
+声明式 Skill 是一种**可执行的 Markdown**：一个 SKILL.md 文件就是一个完整的 Agent 定义，运行时动态构建为 LangGraph ReAct Agent。
 
-| 维度 | Agent（`agents/`） | 技能手册（`skill_manuals/`） |
-|------|-------------------|---------------------------|
-| 本质 | 自主决策的 AI | 操作说明书 |
-| 内容 | Python 代码 + LangGraph + 工具 | Markdown 流程 + 命令模板 + 脚本 |
-| 行为 | 自动推理、调用工具 | 被载入上下文，指导 LLM 执行 |
-| 例子 | `contract_review` 自动审查合同 | "怎么生成 PPT"、"飞书发消息的套路" |
+| 维度 | Agent（`agents/`） | 声明式 Skill（`skills/`） |
+|------|-------------------|-------------------------|
+| 定义方式 | Python 类，继承 `BaseSkill` | `SKILL.md`（Markdown + YAML frontmatter） |
+| 生效方式 | 写代码 + 重启 | 放文件 + 重启（或热加载） |
+| 工具绑定 | `create_agent()` 中硬编码 | frontmatter 的 `tools: [...]` 声明 |
+| 适用场景 | 复杂的、需专用工具链的 Agent | 通用 Python 任务、快速原型 |
 
-### 路由匹配
 
-```
-用户问 "帮我做个PPT"
-      ↓
-  LLM Router → 无 Agent 匹配 → general
-      ↓
-  manual_registry.match() → 关键词命中 ppt.md
-      ↓
-  将手册全文注入 system prompt
-      ↓
-  LLM 按手册中的 python-pptx 命令生成代码
-```
 
-### 接入方式
+### execute_python 沙箱
 
-三种方式，按灵活度排序：
+声明式 Skill 的核心工具，让 Agent 在受限环境中执行 Python 代码：
 
-1. **丢文件**（最简单）—— 把 `.md` 手册文件放到 `skill_manuals/` 目录，重启生效
-2. **调 API**（动态）—— `PUT /skill-manuals/xxx` 注册，无需重启
+- **白名单内置函数**：47 个安全函数，无 `open/eval/exec`
+- **白名单导入**：`pandas`、`numpy`、`plotly`、`python-docx`、`openpyxl`、`requests` 等
+- **线程隔离**：`ThreadPoolExecutor(max_workers=1)`
+- **30 秒超时**：超时自动终止
+
+### 添加新 Skill
+
+只需两步：
+
+1. 创建 `skills/<name>/SKILL.md`（含 frontmatter + body）
+2. 可选：创建 `skills/<name>/references/` 放参考数据
+
+重启后自动生效。工具声明为 `execute_python` 时零代码；需要专用工具时先写 `@tool` 函数，然后在 frontmatter 中声明。
 
 ---
 
@@ -796,7 +799,7 @@ invalidate_mcp_cache()
 
 ---
 
-## 添加新技能（agent）
+## 添加新agent（编码方式）
 
 只需 3 个文件，无需修改任何配置——`SkillRegistry.auto_discover()` 会自动扫描并注册。
 
@@ -819,6 +822,6 @@ src/agent_platform/agents/my_agent/
 
 ---
 
-## 添加组合技能
+### 添加组合技能
 
 组合技能通过 `compose()` 方法编排多个子 Agent，实现跨技能协作

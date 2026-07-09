@@ -158,16 +158,17 @@ async def execute_decision(
                 reply = agent_result["messages"][-1].content
                 tokens = _extract_tokens(agent_result)
             else:
-                # 检查技能手册匹配
-                manual_name: str | None = None
-                if deps.manual_registry:
-                    matched = deps.manual_registry.match(message)
-                    if matched:
-                        manual_name = matched.name
-                        decision.skill_name = f"manual:{matched.name}"
-                reply, tokens = await _general_response(
-                    message, deps, model_id, invoke_cfg, manual_name=manual_name
-                )
+                # 检查声明式 Skill 匹配
+                declarative = deps.declarative_registry.get(decision.skill_name) if deps.declarative_registry else None
+                if declarative and deps.declarative_registry:
+                    reply, tokens = await _execute_declarative_skill(
+                        declarative, message, deps, model_id, invoke_cfg
+                    )
+                    decision.skill_name = f"skill:{declarative.name}"
+                else:
+                    reply, tokens = await _general_response(
+                        message, deps, model_id, invoke_cfg
+                    )
     except Exception as e:
         error = str(e)
         logger.error("决策执行失败: %s", error, exc_info=True)
@@ -221,11 +222,25 @@ async def execute_skill_direct(
     model_id: str | None = None,
     session_id: str | None = None,
 ) -> str:
-    """跳过路由，直接调用指定技能。"""
+    """跳过路由，直接调用指定技能（Python Agent 或声明式 Skill）。"""
     invoke_cfg = _build_invoke_config(session_id)
+
+    # 先查 Python Agent，再查声明式 Skill
     skill = deps.skill_registry.get(skill_name)
-    if not skill:
+    declarative = None
+    if not skill and deps.declarative_registry:
+        declarative = deps.declarative_registry.get(skill_name)
+
+    if not skill and not declarative:
         return f"未找到技能: {skill_name}"
+
+    # 命中声明式 Skill：走动态构建路径
+    if declarative:
+        reply, tokens = await _execute_declarative_skill(
+            declarative, message, deps, model_id, invoke_cfg
+        )
+        # 记录 session 和审计
+        return reply
 
     start_time = time.monotonic()
     reply = ""
@@ -298,39 +313,77 @@ def _build_invoke_config(session_id: str | None) -> dict:
     return {"configurable": {"thread_id": uuid4().hex}}
 
 
+async def _execute_declarative_skill(
+    skill, message: str, deps: PlatformDeps, model_id: str | None, invoke_cfg: dict
+) -> tuple[str, dict]:
+    """执行声明式 Skill。"""
+    from agent_platform.skills.builder import build_skill_agent, extract_complete_result
+    from agent_platform.tools.registry import tool_map
+
+    model = deps.model_provider.get_model(model_id)
+    from agent_platform.config.settings import settings as _settings
+    max_calls = _settings.declarative_skills_max_tool_calls
+
+    tools = []
+    for tool_name in skill.tools:
+        t = tool_map().get(tool_name)
+        if t:
+            tools.append(t)
+        else:
+            logger.warning("Skill '%s' 声明了工具 '%s'，但工具未注册", skill.name, tool_name)
+
+    session_id = invoke_cfg.get("configurable", {}).get("thread_id", "") if invoke_cfg else ""
+
+    agent = build_skill_agent(model, skill, tools, max_tool_calls=max_calls, session_id=session_id)
+
+    result = await agent.ainvoke(
+        {"messages": [HumanMessage(content=message)]},
+        config=invoke_cfg or {},
+    )
+
+    complete_data = extract_complete_result(result["messages"])
+    reply = complete_data.get("summary", "") or complete_data.get("detail", "") or ""
+
+    tokens = _extract_tokens(result)
+    return reply, tokens
+
+
 async def _general_response(
     message: str,
     deps: PlatformDeps,
     model_id: str | None = None,
     invoke_cfg: dict | None = None,
-    *,
-    manual_name: str | None = None,
-) -> str:
-    """通用对话回复，可选注入技能手册内容。"""
-    system_content = "你是一个通用智能助手，尽力回答用户的问题。"
-
-    # ── 技能手册注入 ──
-    if deps.manual_registry and deps.manual_registry.count > 0:
-        # 按指定名称获取，或自动匹配
-        manual_prompt = None
-        if manual_name:
-            manual_prompt = deps.manual_registry.get_prompt_text(manual_name)
-        else:
-            manual_prompt = deps.manual_registry.get_prompt_text(message)
-
-        if manual_prompt:
-            system_content += f"\n\n{manual_prompt}"
-            logger.info("注入技能手册: %s", manual_name or "自动匹配")
-
+) -> tuple[str, dict]:
+    """通用对话回复。"""
     model = deps.model_provider.get_model(model_id)
     result = await model.ainvoke(
         [
-            SystemMessage(content=system_content),
+            SystemMessage(content="你是一个通用智能助手，尽力回答用户的问题。"),
             HumanMessage(content=message),
         ],
         config=invoke_cfg or {},
     )
     return result.content, _extract_tokens_from_message(result)
+
+
+async def _execute_declarative_skill_direct(
+    skill_name: str, message: str, deps: PlatformDeps,
+    *, model_id: str | None = None, session_id: str | None = None,
+) -> str:
+    """跳过路由，直接执行声明式 Skill。"""
+    if not deps.declarative_registry:
+        return "声明式 Skill 系统未启用"
+
+    skill = deps.declarative_registry.get(skill_name)
+    if not skill:
+        available = [s.name for s in (deps.declarative_registry.list_skills() or [])]
+        return f"未找到声明式 Skill: {skill_name}。可用: {', '.join(available)}"
+
+    invoke_cfg = _build_invoke_config(session_id)
+    reply, _ = await _execute_declarative_skill(
+        skill, message, deps, model_id, invoke_cfg
+    )
+    return reply
 
 
 # ── 向后兼容 ──────────────────────────────────────────────────

@@ -5,7 +5,8 @@ from pydantic import BaseModel
 
 class ChatRequest(BaseModel):
     message: str
-    skill: str | None = None
+    agent: str | None = None   # 显式指定 Python Agent（agents/ 目录下）
+    skill: str | None = None   # 显式指定声明式 Skill（skills/ 目录下）
     model: str | None = None
     session_id: str | None = None
 

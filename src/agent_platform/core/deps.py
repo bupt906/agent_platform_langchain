@@ -17,7 +17,7 @@ if TYPE_CHECKING:
     from agent_platform.prompts.builder import LayeredPromptBuilder
     from agent_platform.tools.budget import ToolBudgetManager
     from agent_platform.tools.rate_limiter import ToolRateLimiter
-    from agent_platform.skill_manuals.loader import SkillManualRegistry
+    from agent_platform.skills.registry import DeclarativeSkillRegistry
     from agent_platform.hitl.store import ApprovalStore
 
 
@@ -45,8 +45,8 @@ class PlatformDeps:
     tool_rate_limiter: ToolRateLimiter | None = None
     tool_budget_manager: ToolBudgetManager | None = None
 
-    # ── 技能手册 ──
-    manual_registry: SkillManualRegistry | None = None
+    # ── 声明式 Skills ──
+    declarative_registry: DeclarativeSkillRegistry | None = None
 
     # ── HITL ──
     approval_store: ApprovalStore | None = None

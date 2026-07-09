@@ -10,13 +10,14 @@ import httpx
 from fastapi import FastAPI
 from langgraph.checkpoint.sqlite.aio import AsyncSqliteSaver
 
-from agent_platform.skill_manuals.loader import SkillManualRegistry
+from agent_platform.skills.registry import DeclarativeSkillRegistry
+from agent_platform.tools import register_all_declarative_tools
 from agent_platform.api.middleware import (
     AuthMiddleware,
     ObservabilityMiddleware,
     RateLimitMiddleware,
 )
-from agent_platform.api.routes import audit, chat, hitl, manuals, review, skills
+from agent_platform.api.routes import audit, chat, hitl, review, skills
 from agent_platform.config.settings import settings
 from agent_platform.core.deps import PlatformDeps
 from agent_platform.core.registry import SkillRegistry
@@ -67,15 +68,10 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     await kb_registry.load_from_dir(kb_dir, model_provider=model_provider)
     logger.info("知识库加载完成，共 %d 个（已向量化）", kb_registry.count)
 
-    # ── 技能手册加载 ──
-    manuals_dir = settings.skill_manual_path
-    if not Path(manuals_dir).is_absolute():
-        # 相对路径 → 相对于 agent_platform package 目录解析
-        package_dir = Path(__file__).parent.parent  # src/agent_platform/
-        manuals_dir = str(package_dir / manuals_dir)
-    manual_registry = SkillManualRegistry()
-    if settings.skill_manual_enabled:
-        manual_registry.load_from_dir(manuals_dir)
+    # ── 声明式 Skills 加载 ──
+    register_all_declarative_tools()
+    declarative_registry = DeclarativeSkillRegistry()
+    logger.info("声明式 Skills 加载完成，共 %d 个", declarative_registry.count)
 
     async with httpx.AsyncClient() as http_client:
         deps = PlatformDeps(
@@ -88,7 +84,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
             summarizer=summarizer,
             audit_store=audit_store,
             approval_store=approval_store,
-            manual_registry=manual_registry,
+            declarative_registry=declarative_registry,
             kb_registry=kb_registry,
         )
         app.state.deps = deps
@@ -131,7 +127,6 @@ app.include_router(chat.router)
 app.include_router(skills.router)
 app.include_router(audit.router)
 app.include_router(hitl.router)
-app.include_router(manuals.router)
 app.include_router(review.router)
 
 
