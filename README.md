@@ -67,16 +67,17 @@ agent_platform_langchain/
 │   ├── agents/                     # Agent 插件目录（自动发现）
 │   │   ├── base.py                 # Agent 基类 BaseSkill
 │   │   ├── qa/                     # 问答 Agent
-│   │   │   ├── skill.py            
-│   │   │   └── tools.py            
 │   │   ├── data_query/             # 问数 Agent
-│   │   │   ├── skill.py           
-│   │   │   └── tools.py            
 │   │   ├── contract_review/        # 合同审查 Agent
-│   │   │   ├── skill.py            
-│   │   │   └── tools.py            
-│   │   └── composite/              # 组合 Agent（数据 + 合同审查）
-│   │       └── skill.py            #   编排多个子 Agent
+│   │   ├── composite/              # 组合 Agent
+│   │   └── document_review/        # AI 文档审阅 Agent
+│   ├── knowledge_bases/            # 知识库目录（向量 RAG）
+│   │   ├── registry.py             #   KnowledgeBaseRegistry
+│   │   ├── vector_store.py         #   sqlite-vec 向量存储
+│   │   ├── compliance.md           #   合规性知识库
+│   │   ├── terminology.md          #   用词规范知识库
+│   │   ├── technical.md            #   专业技术知识库
+│   │   └── mining.md               #   矿山适配知识库
 │   │
 │   ├── skill_manuals/              # 技能手册目录（操作指南型）
 │   │   ├── loader.py                #   手册加载 / 解析 / 关键词匹配
@@ -209,6 +210,10 @@ curl http://localhost:8000/hitl/approvals
 | `TOOL_TIMEOUT_SECONDS` | `30.0` | 单个工具调用超时秒数 |
 | `TOOL_RATE_LIMIT_PER_MINUTE` | `100` | 全局工具调用速率限制 |
 | `TOOL_BUDGET_MAX_CALLS` | `50` | 单次对话最大工具调用次数 |
+| `EMBEDDING_MODEL` | (空) | embedding 模型，格式 `provider:model`。DeepSeek 不支持 embedding，配此项可切换到 Qwen/OpenAI |
+| `EMBEDDING_DIMENSIONS` | `1536` | 向量维度 |
+| `KB_VECTOR_TOP_K` | `5` | 向量检索返回条数 |
+| `KB_VECTOR_THRESHOLD` | `0.7` | 余弦距离阈值 |
 | `HITL_ENABLED` | `true` | 是否启用人机协同 |
 | `HITL_APPROVAL_TIMEOUT` | `300` | 审批超时秒数 |
 
@@ -413,6 +418,19 @@ data: {"type": "approval_result", "approval_id": "a1b2c3", "status": "approved"}
 
 ### POST `/hitl/replan` — 提交重规划请求
 
+### POST `/review` — 文档审阅
+
+```json
+{
+  "file_path": "/path/to/document.docx",
+  "kb_ids": ["compliance", "terminology"]
+}
+```
+
+逐句审阅文档，在指定知识库中检索比对，返回每句的审查结论。支持 txt / md / docx 格式。
+
+### GET `/review/kbs` — 列出可用的审查知识库
+
 ### 认证
 
 配置 `API_KEY` 环境变量后，所有请求（除 `/health`）均需携带 Bearer Token：
@@ -429,8 +447,6 @@ curl -X POST http://localhost:8000/chat \
 ### 速率限制
 
 通过 `RATE_LIMIT_PER_MINUTE` 配置每 IP 每分钟最大请求数（默认 60）。超出限制返回 `429 Too Many Requests`。`/health` 端点不受限流影响。
-
----
 
 ## 多 Agent 编排模式
 
@@ -581,7 +597,7 @@ prefs = await deps.user_profile_store.get_profile(session_id)
 
 - 会话 ID、技能、模型
 - 用户消息与助手回复
-- Token 用量（prompt / completion / total）
+- Token 用量（prompt / completion / total）— 自动从 LLM 响应中提取，支持 DeepSeek/OpenAI/Qwen
 - 执行耗时
 - 路由置信度
 - 异常信息

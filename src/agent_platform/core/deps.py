@@ -50,3 +50,6 @@ class PlatformDeps:
 
     # ── HITL ──
     approval_store: ApprovalStore | None = None
+
+    # ── 知识库 ──
+    kb_registry: KnowledgeBaseRegistry | None = None  # type: ignore[name-defined]

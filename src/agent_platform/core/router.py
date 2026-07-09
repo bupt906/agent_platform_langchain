@@ -26,6 +26,46 @@ class RouterDecision(BaseModel):
     execution_plan: ExecutionPlan | None = None
 
 
+def _extract_tokens_from_message(msg) -> dict[str, int]:
+    """从单个 AIMessage 中提取 token 用量。"""
+    tokens = {"prompt": 0, "completion": 0, "total": 0}
+    try:
+        um = getattr(msg, "usage_metadata", None) or {}
+        if um.get("total_tokens"):
+            tokens["prompt"] = um.get("input_tokens", 0)
+            tokens["completion"] = um.get("output_tokens", 0)
+            tokens["total"] = um.get("total_tokens", 0)
+            return tokens
+        meta = getattr(msg, "response_metadata", {}) or {}
+        usage = meta.get("token_usage", {})
+        if usage:
+            tokens["prompt"] = usage.get("prompt_tokens", 0)
+            tokens["completion"] = usage.get("completion_tokens", 0)
+            tokens["total"] = usage.get("total_tokens", 0)
+    except Exception:
+        pass
+    return tokens
+
+
+def _extract_tokens(result: dict | None) -> dict[str, int]:
+    """从 agent.ainvoke 返回的 state dict 中提取 token 用量。
+
+    遍历 messages 列表，从最后一个 AIMessage 提取。
+    如果是 input 是 dict 没有 messages 字段，直接返回 0。
+    """
+    if result is None:
+        return {"prompt": 0, "completion": 0, "total": 0}
+    try:
+        messages = result.get("messages", [])
+        for msg in reversed(messages):
+            t = _extract_tokens_from_message(msg)
+            if t["total"] > 0:
+                return t
+    except Exception:
+        pass
+    return {"prompt": 0, "completion": 0, "total": 0}
+
+
 def _build_router_prompt(deps: PlatformDeps) -> str:
     # 优先使用分层 builder，回退到原有拼接逻辑
     if deps.prompt_builder:
@@ -56,7 +96,9 @@ def _build_router_prompt(deps: PlatformDeps) -> str:
    - subtasks: 子任务列表，每个包含 id、skill_name、description
 3. 如果没有合适的技能匹配，skill_name 填 "general"，mode="single"
 4. rewritten_query 是对用户原始问题的优化改写，使其更适合目标技能处理
-5. confidence 是你对路由决策的置信度 (0.0-1.0)"""
+5. confidence 是你对路由决策的置信度 (0.0-1.0)
+
+请以 JSON 格式输出路由决策。"""
 
 
 async def resolve_route(
@@ -67,8 +109,8 @@ async def resolve_route(
 ) -> RouterDecision:
     """分析用户意图，返回路由决策。chat 端点的共享入口。"""
     model = deps.model_provider.get_model(model_id)
-    structured_model = model.with_structured_output(RouterDecision)
-
+    # method="json_mode" 兼容 DeepSeek（不支持 json_schema 但支持 json_object）
+    structured_model = model.with_structured_output(RouterDecision, method="json_mode")
     system_prompt = _build_router_prompt(deps)
     decision: RouterDecision = await structured_model.ainvoke(
         [SystemMessage(content=system_prompt), HumanMessage(content=message)]
@@ -96,6 +138,7 @@ async def execute_decision(
     start_time = time.monotonic()
     reply = ""
     error = None
+    tokens = {"prompt": 0, "completion": 0, "total": 0}
 
     try:
         if decision.mode == "multi" and decision.execution_plan:
@@ -108,11 +151,12 @@ async def execute_decision(
                 agent = skill.compose(skills, deps.model_provider) or skill.create_agent(
                     deps.model_provider, checkpointer=deps.checkpointer
                 )
-                result = await agent.ainvoke(
+                agent_result = await agent.ainvoke(
                     {"messages": [HumanMessage(content=decision.rewritten_query)]},
                     config=invoke_cfg,
                 )
-                reply = result["messages"][-1].content
+                reply = agent_result["messages"][-1].content
+                tokens = _extract_tokens(agent_result)
             else:
                 # 检查技能手册匹配
                 manual_name: str | None = None
@@ -121,7 +165,7 @@ async def execute_decision(
                     if matched:
                         manual_name = matched.name
                         decision.skill_name = f"manual:{matched.name}"
-                reply = await _general_response(
+                reply, tokens = await _general_response(
                     message, deps, model_id, invoke_cfg, manual_name=manual_name
                 )
     except Exception as e:
@@ -154,6 +198,9 @@ async def execute_decision(
                     agent_type=f"skill:{decision.skill_name}" if decision.skill_name not in ("general", "multi_agent") else decision.skill_name,
                     user_message=message,
                     assistant_message=reply,
+                    tokens_prompt=tokens["prompt"],
+                    tokens_completion=tokens["completion"],
+                    tokens_total=tokens["total"],
                     duration_ms=(time.monotonic() - start_time) * 1000,
                     skill_used=decision.skill_name,
                     router_confidence=decision.confidence,
@@ -183,6 +230,7 @@ async def execute_skill_direct(
     start_time = time.monotonic()
     reply = ""
     error = None
+    tokens = {"prompt": 0, "completion": 0, "total": 0}
 
     try:
         skills = deps.skill_registry.get_all_skills()
@@ -194,6 +242,7 @@ async def execute_skill_direct(
             config=invoke_cfg,
         )
         reply = result["messages"][-1].content
+        tokens = _extract_tokens(result)
     except Exception as e:
         error = str(e)
         logger.error("技能直接调用失败: %s", error, exc_info=True)
@@ -225,6 +274,9 @@ async def execute_skill_direct(
                     agent_type=f"skill:{skill_name}",
                     user_message=message,
                     assistant_message=reply,
+                    tokens_prompt=tokens["prompt"],
+                    tokens_completion=tokens["completion"],
+                    tokens_total=tokens["total"],
                     duration_ms=duration_ms,
                     skill_used=skill_name,
                     error=error,
@@ -240,7 +292,10 @@ def _build_invoke_config(session_id: str | None) -> dict:
     """构建 LangGraph ainvoke 的 config dict。"""
     if session_id:
         return {"configurable": {"thread_id": session_id}}
-    return {}
+    # SqliteSaver 等持久化 checkpointer 要求必须有 thread_id
+    from uuid import uuid4
+
+    return {"configurable": {"thread_id": uuid4().hex}}
 
 
 async def _general_response(
@@ -275,7 +330,7 @@ async def _general_response(
         ],
         config=invoke_cfg or {},
     )
-    return result.content
+    return result.content, _extract_tokens_from_message(result)
 
 
 # ── 向后兼容 ──────────────────────────────────────────────────

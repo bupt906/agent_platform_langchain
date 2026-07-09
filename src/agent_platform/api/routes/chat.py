@@ -42,7 +42,7 @@ async def chat(request: Request, body: ChatRequest) -> ChatResponse:
             model_id=body.model,
             session_id=body.session_id,
         )
-        return ChatResponse(reply=reply, skill_used=body.skill)
+        return ChatResponse(reply=reply, skill_used=body.skill, model_used=body.model or deps.model_provider._settings.default_model, session_id=body.session_id)
 
     # 自动路由
     decision = await resolve_route(body.message, deps, model_id=body.model)
@@ -53,7 +53,7 @@ async def chat(request: Request, body: ChatRequest) -> ChatResponse:
         model_id=body.model,
         session_id=body.session_id,
     )
-    return ChatResponse(reply=reply, skill_used=decision.skill_name)
+    return ChatResponse(reply=reply, skill_used=decision.skill_name, model_used=body.model or deps.model_provider._settings.default_model, session_id=body.session_id)
 
 
 # ── 流式对话 ────────────────────────────────────────────────────
@@ -112,9 +112,9 @@ async def chat_stream(request: Request, body: ChatRequest) -> EventSourceRespons
             )
             query = decision.rewritten_query if decision else body.message
 
-            invoke_cfg = {}
-            if body.session_id:
-                invoke_cfg["configurable"] = {"thread_id": body.session_id}
+            from uuid import uuid4
+
+            invoke_cfg = {"configurable": {"thread_id": body.session_id or uuid4().hex}}
 
             async for event in agent.astream_events(
                 {"messages": [HumanMessage(content=query)]},

@@ -74,8 +74,12 @@ class TestBuildRouterPrompt:
 
 
 class TestInvokeConfig:
-    def test_no_session_id_returns_empty_dict(self):
-        assert _build_invoke_config(None) == {}
+    def test_no_session_id_returns_auto_thread_id(self):
+        cfg = _build_invoke_config(None)
+        # 持久化 checkpointer 要求必须有 thread_id，无 session_id 时自动生成
+        assert "configurable" in cfg
+        assert "thread_id" in cfg["configurable"]
+        assert len(cfg["configurable"]["thread_id"]) > 0
 
     def test_with_session_id_includes_thread_id(self):
         cfg = _build_invoke_config("session-123")

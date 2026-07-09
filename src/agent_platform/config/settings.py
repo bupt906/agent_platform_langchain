@@ -72,6 +72,12 @@ class Settings(BaseSettings):
     hitl_sensitive_skills: list[str] = ["data_query", "contract_review"]  # 需审批的技能
     hitl_auto_approve_low_risk: bool = False  # 自动批准低风险操作
 
+    # ── 向量 RAG ──
+    embedding_model: str = ""  # embedding 模型（空=复用 default_model 同 provider 的 embedding）
+    embedding_dimensions: int = 1536  # 向量维度（deepseek=1536, qwen=1024）
+    kb_vector_top_k: int = 5  # 向量检索 top-k
+    kb_vector_threshold: float = 0.7  # 余弦距离阈值（0=完全匹配，2=相反，默认0.7）
+
     models: ModelConfig = Field(default_factory=ModelConfig)
 
     model_config = {"env_file": ".env", "extra": "ignore"}

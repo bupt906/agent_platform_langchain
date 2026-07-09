@@ -284,14 +284,14 @@ def build_orchestrator_worker_graph(
         model = deps.model_provider.get_model()
         skill_names = list(skills.keys())
         response: ExecutionPlan = await model.with_structured_output(
-            ExecutionPlan
+            ExecutionPlan, method="json_mode"
         ).ainvoke(
             [
                 SystemMessage(
                     content=(
                         "你是一个任务分解专家。将用户问题分解为可以并行执行的子任务。\n"
                         f"可用技能: {', '.join(skill_names)}\n"
-                        "返回 subtasks 列表。"
+                        "返回 subtasks 列表（json 格式）。"
                     )
                 ),
                 HumanMessage(content=state["original_query"]),
