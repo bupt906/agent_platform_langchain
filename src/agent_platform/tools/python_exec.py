@@ -96,30 +96,19 @@ def execute_python(code: str, session_id: str = "") -> str:
             compiled = compile(code, "<sandbox>", "exec")
             exec(compiled, ns)
 
+    pool = ThreadPoolExecutor(max_workers=1)
+    future = pool.submit(_run)
     try:
-        with ThreadPoolExecutor(max_workers=1) as pool:
-            future = pool.submit(_run)
-            future.result(timeout=PYTHON_EXEC_TIMEOUT)
-
-        stdout = output_buf.getvalue()
-        result_vars = {
-            k: repr(v) for k, v in ns.items()
-            if k not in safe_keys and not k.startswith("_") and not callable(v)
-        }
-
-        return json.dumps({
-            "stdout": stdout[:50000],
-            "variables": result_vars,
-            "success": True,
-        }, ensure_ascii=False, default=str)
-
+        future.result(timeout=PYTHON_EXEC_TIMEOUT)
     except FuturesTimeoutError:
+        pool.shutdown(wait=False)
         return json.dumps({
             "error": f"TimeoutError: 代码执行超过 {PYTHON_EXEC_TIMEOUT} 秒，已终止",
             "stdout": output_buf.getvalue()[:10000],
             "success": False,
         }, ensure_ascii=False)
     except Exception as e:
+        pool.shutdown(wait=False)
         import traceback
         tb = traceback.format_exc()
         return json.dumps({
@@ -128,6 +117,20 @@ def execute_python(code: str, session_id: str = "") -> str:
             "stdout": output_buf.getvalue()[:10000],
             "success": False,
         }, ensure_ascii=False)
+
+    pool.shutdown(wait=False)
+
+    stdout = output_buf.getvalue()
+    result_vars = {
+        k: repr(v) for k, v in ns.items()
+        if k not in safe_keys and not k.startswith("_") and not callable(v)
+    }
+
+    return json.dumps({
+        "stdout": stdout[:50000],
+        "variables": result_vars,
+        "success": True,
+    }, ensure_ascii=False, default=str)
 
 
 def register_python_tool():
