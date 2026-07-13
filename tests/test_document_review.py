@@ -228,26 +228,34 @@ class TestReviewPipeline:
         assert graph is not None
 
     def test_parse_llm_response_yes(self):
+        from agent_platform.agents.document_review.pipeline import _parse_llm_response
+
         response = '{"是否有问题": "是", "错误原因": "使用了禁用词", "修改建议": "改为审慎表述", "建议依据": "GB 3100"}'
-        result = ReviewPipeline._parse_llm_response(response, "测试句子")
-        assert result["是否有问题"] == "是"
+        result = _parse_llm_response(response, "测试句子")
+        assert result["has_issue"] == "是"
         assert result["content"]["错误原因"] == "使用了禁用词"
 
     def test_parse_llm_response_no(self):
+        from agent_platform.agents.document_review.pipeline import _parse_llm_response
+
         response = '{"是否有问题": "否"}'
-        result = ReviewPipeline._parse_llm_response(response, "测试句子")
-        assert result["是否有问题"] == "否"
+        result = _parse_llm_response(response, "测试句子")
+        assert result["has_issue"] == "否"
         assert result["content"] == {}
 
     def test_parse_llm_response_with_markdown(self):
+        from agent_platform.agents.document_review.pipeline import _parse_llm_response
+
         response = '```json\n{"是否有问题": "否"}\n```'
-        result = ReviewPipeline._parse_llm_response(response, "测试句子")
-        assert result["是否有问题"] == "否"
+        result = _parse_llm_response(response, "测试句子")
+        assert result["has_issue"] == "否"
 
     def test_parse_llm_response_invalid(self):
+        from agent_platform.agents.document_review.pipeline import _parse_llm_response
+
         response = "这不是有效的 JSON"
-        result = ReviewPipeline._parse_llm_response(response, "测试句子")
-        assert result["是否有问题"] == "否"
+        result = _parse_llm_response(response, "测试句子")
+        assert result["has_issue"] == "否"
 
 
 class TestReviewTools:

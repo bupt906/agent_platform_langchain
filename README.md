@@ -211,6 +211,7 @@ curl http://localhost:8000/hitl/approvals
 | `DECLARATIVE_SKILLS_ENABLED` | `true` | 是否启用声明式 Skill 系统 |
 | `DECLARATIVE_SKILLS_MAX_TOOL_CALLS` | `10` | 单个 Skill 的工具调用上限 |
 | `PYTHON_SANDBOX_TIMEOUT` | `30` | execute_python 沙箱超时秒数 |
+| `CALLBACK_BASE_URL` | (空) | 外部 callback 服务地址（空=使用内置 callback 端点） |
 | `MEMORY_DB_PATH` | `memory.db` | 记忆数据库路径 |
 | `MEMORY_RETENTION_DAYS` | `90` | 对话历史保留天数 |
 | `AUTO_SUMMARIZE_THRESHOLD` | `10` | 触发自动摘要的轮次阈值 |
@@ -401,14 +402,32 @@ data: {"type": "approval_result", "approval_id": "a1b2c3", "status": "approved"}
 
 ```json
 {
+  "task_id": 1,
   "file_path": "/path/to/document.docx",
+  "kb_type_code": "mining",
   "kb_ids": ["compliance", "terminology"]
 }
 ```
 
-逐句审阅文档，在指定知识库中检索比对，返回每句的审查结论。支持 txt / md / docx 格式。
+逐句审阅文档（支持 txt / md / docx），基于知识库标准返回每句审查结论。审阅完成后自动回调更新任务状态和提交结果。
 
 ### GET `/review/kbs` — 列出可用的审查知识库
+
+### Callback 接口
+
+审阅流程中自动调用的通知接口：
+
+| 端点 | 方法 | 说明 |
+|------|------|------|
+| `/api/callback/task/status` | `PUT` | 更新任务状态（"1"=审阅中 "2"=审阅完毕 "3"=失败） |
+| `/api/callback/batch` | `POST` | 批量提交审阅结果 |
+| `/api/callback/task/status/{task_id}` | `GET` | 查询任务状态 |
+| `/api/callback/batch/{task_id}` | `GET` | 查询审阅结果 |
+
+> 未配置 `CALLBACK_BASE_URL` 时，回调走内置端点，外部可通过以上 GET 接口轮询。
+| `/api/callback/batch/{task_id}` | `GET` | 查询审阅结果 |
+
+> 如果不配置 `CALLBACK_BASE_URL`，回调走内置端点。外部系统可通过以上 GET 接口轮询结果。
 
 ### 认证
 

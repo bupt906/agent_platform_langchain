@@ -1,7 +1,4 @@
-"""文档审阅 API 端点。
-
-POST /review — 对文档执行逐句审阅，基于知识库标准输出结构化结果。
-"""
+"""文档审阅 API。"""
 
 from __future__ import annotations
 
@@ -9,73 +6,138 @@ import logging
 
 from fastapi import APIRouter, HTTPException, Request
 
-from agent_platform.agents.document_review.pipeline import run_review_pipeline
 from agent_platform.api.schemas import ReviewRequest, ReviewResponse
+from agent_platform.core.deps import PlatformDeps
 
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/review", tags=["review"])
 
 
-def _get_deps(request: Request):
+def _get_deps(request: Request) -> PlatformDeps:
     return request.app.state.deps
 
 
+# ── 文档审阅 ──────────────────────────────────────────────
+
+
 @router.post("", response_model=ReviewResponse)
-async def review_document(request: Request, body: ReviewRequest):
-    """对文档进行逐句审阅。
-
-    流程：解析文档 → 句子切分 → 逐句在知识库中检索比对 → 输出结构化审查结果。
-
-    请求体：
-    ```json
-    {
-      "file_path": "/path/to/document.docx",
-      "kb_ids": ["compliance", "terminology"]
-    }
-    ```
-
-    返回每个句子的审查结论，包含是否有问题、错误原因、修改建议、建议依据。
-    """
+async def review_document(request: Request, body: ReviewRequest) -> ReviewResponse:
+    """对文档执行逐句审阅。"""
     deps = _get_deps(request)
 
     if not body.kb_ids:
-        raise HTTPException(status_code=400, detail="kb_ids 不能为空，至少指定一个知识库")
+        raise HTTPException(status_code=400, detail="kb_ids 不能为空")
 
-    # 验证知识库 ID 有效性
     if deps.kb_registry:
-        invalid = [k for k in body.kb_ids if not deps.kb_registry.get(k)]
+        available = [kb.kb_id for kb in deps.kb_registry.list_all()]
+        invalid = [k for k in body.kb_ids if k not in available]
         if invalid:
-            available = [k.kb_id for k in deps.kb_registry.list_all()]
             raise HTTPException(
                 status_code=400,
-                detail=f"无效的知识库 ID: {invalid}，可用: {available}",
+                detail=f"无效的知识库 ID: {invalid}。可用: {available}",
             )
 
-    # 设置 skill 的 deps 引用
-    import agent_platform.agents.document_review.skill as skill_mod
-
-    skill_mod._skill_deps = deps
+    # 通知任务状态：审阅中
+    await _notify_task_status(deps, body.task_id, "1")
 
     try:
-        result = await run_review_pipeline(body.file_path, body.kb_ids, deps)
+        from agent_platform.agents.document_review.pipeline import run_review_pipeline
+
+        result = await run_review_pipeline(
+            file_path=body.file_path,
+            kb_ids=body.kb_ids,
+            deps=deps,
+            task_id=body.task_id,
+        )
+
+        # 提交审阅结果（先提交，保证失败时结果也不丢失）
+        results = result.get("results", [])
+        submit_error = None
+        if results:
+            try:
+                await _submit_review_results(deps, results)
+            except Exception as e:
+                submit_error = str(e)
+                logger.error("审阅结果提交失败: %s", e)
+
+        # 判断最终状态
+        error_count = result.get("summary", {}).get("errors", 0)
+        if error_count > 0 or submit_error:
+            logger.warning("审阅部分失败: errors=%d submit_error=%s", error_count, submit_error or "无")
+            await _notify_task_status(deps, body.task_id, "3")
+        else:
+            await _notify_task_status(deps, body.task_id, "2")
+
+        return ReviewResponse(
+            task_id=body.task_id,
+            results=result.get("results", []),
+            summary=result.get("summary", {}),
+        )
+
     except FileNotFoundError as e:
+        await _notify_task_status(deps, body.task_id, "3")
         raise HTTPException(status_code=404, detail=str(e))
     except ValueError as e:
+        await _notify_task_status(deps, body.task_id, "3")
         raise HTTPException(status_code=400, detail=str(e))
     except Exception as e:
-        logger.error("文档审阅失败: %s", e, exc_info=True)
+        logger.exception("文档审阅失败")
+        await _notify_task_status(deps, body.task_id, "3")
         raise HTTPException(status_code=500, detail=f"审阅失败: {e}")
 
-    return ReviewResponse(**result)
+
+# ── 知识库列表 ────────────────────────────────────────────
 
 
 @router.get("/kbs")
-async def list_knowledge_bases(request: Request):
-    """列出所有可用的审查知识库。"""
+async def list_knowledge_bases(request: Request) -> dict:
     deps = _get_deps(request)
     if not deps.kb_registry:
         return {"knowledge_bases": [], "total": 0}
-
     infos = deps.kb_registry.list_infos()
     return {"knowledge_bases": infos, "total": len(infos)}
+
+
+# ── 内部 helper ───────────────────────────────────────────
+
+
+async def _notify_task_status(deps: PlatformDeps, task_id: int, status: str) -> None:
+    try:
+        payload = {"task_id": task_id, "status": status}
+        url = _callback_url(deps, "/api/callback/task/status")
+        if url:
+            await deps.http_client.put(url, json=payload)
+            logger.info("任务状态更新: task_id=%d status=%s", task_id, status)
+    except Exception:
+        logger.warning("任务状态回调失败", exc_info=True)
+
+
+async def _submit_review_results(deps: PlatformDeps, results: list[dict]) -> None:
+    if not results:
+        return
+    try:
+        items = [
+            {
+                "task_id": r.get("task_id", 0),
+                "sentence_index": r.get("sentence_index", 0),
+                "reviewed_sentence": r.get("reviewed_sentence", ""),
+                "has_issue": r.get("has_issue", "否"),
+                "content": r.get("content", {}),
+            }
+            for r in results
+        ]
+        url = _callback_url(deps, "/api/callback/batch")
+        if url:
+            resp = await deps.http_client.post(url, json=items)
+            logger.info("审阅结果回调: %d 条", len(items))
+    except Exception:
+        logger.warning("审阅结果回调失败", exc_info=True)
+
+
+def _callback_url(deps: PlatformDeps, path: str) -> str | None:
+    base = getattr(deps, "_callback_base", None) or ""
+    if base:
+        return f"{base}{path}"
+    logger.debug("callback_base_url 未配置，跳过回调: %s", path)
+    return None

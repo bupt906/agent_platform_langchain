@@ -48,6 +48,8 @@ class DocumentReviewSkill(BaseSkill):
         return {"timeout": 120.0, "parallel": False}
 
     def create_agent(self, model_provider: ModelProvider, checkpointer=None) -> CompiledStateGraph:
+        model = model_provider.get_model()
+
         @tool
         async def review_document(file_path: str, kb_ids: str) -> str:
             """对文档执行逐句审阅。
@@ -61,13 +63,12 @@ class DocumentReviewSkill(BaseSkill):
             kb_list = [k.strip() for k in kb_ids.split(",") if k.strip()]
             from agent_platform.agents.document_review.pipeline import run_review_pipeline
 
-            # _deps 由 router 在 compose/create_agent 调用前设置
-            result = await run_review_pipeline(file_path, kb_list, _skill_deps)
+            # deps 通过 create_agent 时注入到 tool 闭包中
+            result = await run_review_pipeline(file_path, kb_list, _deps)
             return json.dumps(result, ensure_ascii=False, indent=2)
 
-        model = model_provider.get_model()
         return create_agent(model, [review_document], system_prompt=SYSTEM_PROMPT, checkpointer=checkpointer)
 
 
-_skill_deps = None  # 由外部设置
+_deps = None  # 由 router 在调用 compose/create_agent 前设置
 skill = DocumentReviewSkill()

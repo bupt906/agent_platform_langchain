@@ -45,20 +45,52 @@ class SubTaskResponse(BaseModel):
 class ReviewRequest(BaseModel):
     """文档审阅请求。"""
 
+    task_id: int
     file_path: str
+    kb_type_code: str = ""
     kb_ids: list[str]
 
 
 class ReviewResultItem(BaseModel):
     """单句审阅结果。"""
 
-    已审阅的句子: str
-    是否有问题: str  # "是" | "否"
+    sentence_index: int
+    reviewed_sentence: str
+    has_issue: str = "否"  # "是" | "否"
     content: dict = {}
 
 
 class ReviewResponse(BaseModel):
     """文档审阅响应。"""
 
+    task_id: int
     results: list[ReviewResultItem]
     summary: dict
+
+
+# ── Callback ───────────────────────────────────────────────
+
+
+class TaskStatusRequest(BaseModel):
+    """更新任务状态请求。"""
+
+    task_id: int = 0
+    status: str = ""  # "1"=审阅中 "2"=审阅完毕 "3"=失败
+
+
+class CallbackBatchItem(BaseModel):
+    """单条审阅结果（callback 批量提交）。"""
+
+    task_id: int
+    sentence_index: int
+    reviewed_sentence: str
+    has_issue: str = "否"  # "是" | "否"
+    content: dict = {}
+
+
+class CallbackResponse(BaseModel):
+    """Callback 通用响应。"""
+
+    code: int = 200
+    msg: str = "操作成功"
+    data: object = None

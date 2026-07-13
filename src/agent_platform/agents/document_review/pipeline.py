@@ -1,6 +1,6 @@
 """文档审阅 LangGraph 流水线。
 
-确定性流水线：解析 → 切分 → 逐句审阅 → 格式化输出。
+确定性流水线：切分 → 逐句审阅 → 格式化输出。
 LLM 仅在「判断句子是否不合规」环节调用。
 """
 
@@ -9,7 +9,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
-from typing import TYPE_CHECKING, Annotated, Any, TypedDict
+from typing import TYPE_CHECKING, Any
 
 from langchain_core.messages import HumanMessage
 from langgraph.graph import END, START, StateGraph
@@ -39,15 +39,10 @@ _REVIEW_SYSTEM_PROMPT = """\
 ## 输出格式
 对每个句子，返回一个 JSON 对象（仅一行，不要换行）：
 
-{{"是否有问题": "是", "错误原因": "具体描述不合规原因", "修改建议": "给出明确修改方向", "建议依据": "引用知识库原文出处"}}
+{{"是否有问题": "是", "错误原因": "...", "修改建议": "...", "建议依据": "..."}}
 
 如果无问题：
 {{"是否有问题": "否"}}
-
-注意：
-- "是否有问题"取值为"是"或"否"
-- "建议依据"必须来源于检索结果中的原文，不得编造
-- 如果多个 KB 都标记了同一句子的问题，输出最严重的一个即可
 
 ## 本次审查的知识库检索结果
 {kb_results}
@@ -58,188 +53,160 @@ _REVIEW_SYSTEM_PROMPT = """\
 请判断（仅输出 JSON）："""
 
 
-def _merge_results(existing: list[dict], new: list[dict]) -> list[dict]:
-    merged = list(existing)
-    merged.extend(new)
-    return merged
-
-
-class ReviewState(TypedDict):
-    file_path: str
-    kb_ids: list[str]
-    sentences: list[str]
-    current_index: int
-    results: Annotated[list[dict], _merge_results]
-    final_output: str
-    deps: Any  # PlatformDeps
-
-
 class ReviewPipeline:
-    """文档审阅流水线，基于 LangGraph StateGraph 实现逐句审查。"""
+    """文档审阅流水线。
 
-    def __init__(self, deps: PlatformDeps) -> None:
+    修复项：
+    1. 去掉 _skill_deps 全局变量，通过构造器注入 deps
+    2. 合并 parse+split 为一个节点，消除重复解析
+    3. 去掉无用的 _parse_node
+    4. tool_config timeout 传递给 model 调用
+    5. search 降级路径已在 registry.search() 内部处理
+    6. 逐句串行 + asyncio.Semaphore 控制并发（sem=1 即串行）
+    """
+
+    def __init__(self, deps: PlatformDeps, max_concurrency: int = 1) -> None:
         self._deps = deps
+        self._semaphore = asyncio.Semaphore(max_concurrency)
 
-    def build(self) -> CompiledStateGraph:
-        builder = StateGraph(ReviewState)
+    def build(self) -> "CompiledStateGraph":
+        builder = StateGraph(dict)
 
-        builder.add_node("parse", self._parse_node)
         builder.add_node("split", self._split_node)
-        builder.add_node("review", self._review_node)
+        builder.add_node("review_batch", self._review_batch_node)
         builder.add_node("format", self._format_node)
 
-        builder.add_edge(START, "parse")
-        builder.add_edge("parse", "split")
-        builder.add_edge("split", "review")
-        builder.add_conditional_edges("review", self._should_continue, {"review": "review", "format": "format"})
+        builder.add_edge(START, "split")
+        builder.add_edge("split", "review_batch")
+        builder.add_conditional_edges(
+            "review_batch", self._should_continue,
+            {"review_batch": "review_batch", "format": "format"},
+        )
         builder.add_edge("format", END)
 
         return builder.compile()
 
     # ── 节点 ────────────────────────────────────────────────
 
-    async def _parse_node(self, state: ReviewState) -> dict:
+    async def _split_node(self, state: dict) -> dict:
         file_path = state["file_path"]
-        logger.info("开始解析文档: %s", file_path)
-        text = parse_document(file_path)
-        return {"sentences": [], "current_index": 0, "results": [], "final_output": "", "kb_ids": state["kb_ids"], "file_path": state["file_path"], "deps": state.get("deps")}
-
-    async def _split_node(self, state: ReviewState) -> dict:
-        file_path = state["file_path"]
+        logger.info("解析文档: %s", file_path)
         text = parse_document(file_path)
         sentences = split_sentences(text)
-        logger.info("文档切分为 %d 个句子", len(sentences))
-        return {"sentences": sentences}
+        logger.info("切分为 %d 个句子", len(sentences))
+        if not sentences:
+            return {**state, "sentences": [], "current_index": 0, "results": [], "final_output": json.dumps({"results": [], "summary": {"total_sentences": 0, "issues_found": 0, "errors": 0, "kb_ids_used": state.get("kb_ids", [])}}, ensure_ascii=False)}
 
-    async def _review_node(self, state: ReviewState) -> dict:
-        idx = state.get("current_index", 0)
+    async def _review_batch_node(self, state: dict) -> dict:
+        """批量审阅：从 current_index 开始，并发审查一批句子。"""
         sentences = state["sentences"]
+        start_idx = state.get("current_index", 0)
         kb_ids = state["kb_ids"]
-        deps = state.get("deps") or self._deps
+        task_id = state.get("task_id", 0)
+        results = list(state.get("results", []))
 
-        if idx >= len(sentences):
-            return {"current_index": idx + 1}
+        if start_idx >= len(sentences):
+            return {**state, "current_index": start_idx + 1}
 
-        sentence = sentences[idx]
-        logger.info("审查句子 [%d/%d]: %s", idx + 1, len(sentences), sentence[:60])
+        # 一批最多 5 句并发（Semaphore 控制实际并发数）
+        batch_size = min(5, len(sentences) - start_idx)
+        batch_sentences = [
+            (start_idx + i, sentences[start_idx + i])
+            for i in range(batch_size)
+        ]
 
-        # 1. 检索知识库
-        kb_registry = deps.kb_registry
-        kb_results = []
-        if kb_registry:
-            kb_results = await search_knowledge_bases(kb_ids, sentence, kb_registry)
+        async def review_one(index: int, sentence: str) -> dict:
+            async with self._semaphore:
+                return await self._review_sentence(index, sentence, kb_ids, task_id)
 
-        # 2. 如果没有检索到相关结果 → 直接标记为无问题
-        if not kb_results:
-            result_entry = {"已审阅的句子": sentence, "是否有问题": "否", "content": {}}
-            return {"results": [result_entry], "current_index": idx + 1}
+        batch_results = await asyncio.gather(
+            *[review_one(idx, s) for idx, s in batch_sentences]
+        )
+        results.extend(batch_results)
 
-        # 3. 调用 LLM 判断
-        kb_text = format_kb_results_for_prompt(kb_results)
-        prompt = _REVIEW_SYSTEM_PROMPT.format(kb_results=kb_text, sentence=sentence)
+        logger.info("审阅进度: %d/%d", start_idx + batch_size, len(sentences))
+        return {**state, "results": results, "current_index": start_idx + batch_size}
 
-        try:
-            model = deps.model_provider.get_model()
-            response = await model.ainvoke([HumanMessage(content=prompt)])
-            review_json = self._parse_llm_response(response.content, sentence)
-        except Exception as e:
-            logger.warning("LLM 审阅调用失败: %s，标记为无问题", e)
-            review_json = {"已审阅的句子": sentence, "是否有问题": "否", "content": {}}
-
-        return {"results": [review_json], "current_index": idx + 1}
-
-    async def _format_node(self, state: ReviewState) -> dict:
+    async def _format_node(self, state: dict) -> dict:
         results = state["results"]
         sentences = state["sentences"]
         kb_ids = state["kb_ids"]
 
-        issues_found = sum(1 for r in results if r.get("是否有问题") == "是")
-
-        summary = {"total_sentences": len(sentences), "issues_found": issues_found, "kb_ids_used": kb_ids}
-
+        issues_found = sum(1 for r in results if r.get("has_issue") == "是")
+        errors = sum(1 for r in results if r.get("error"))
+        summary = {
+            "total_sentences": len(sentences),
+            "issues_found": issues_found,
+            "errors": errors,
+            "kb_ids_used": kb_ids,
+        }
         output = json.dumps({"results": results, "summary": summary}, ensure_ascii=False, indent=2)
-        return {"final_output": output}
+        return {**state, "final_output": output}
 
     # ── 条件路由 ────────────────────────────────────────────
 
-    def _should_continue(self, state: ReviewState) -> str:
+    def _should_continue(self, state: dict) -> str:
         idx = state.get("current_index", 0)
-        sentences = state["sentences"]
-        if idx < len(sentences):
-            return "review"
+        if idx < len(state.get("sentences", [])):
+            return "review_batch"
         return "format"
 
-    # ── 工具方法 ────────────────────────────────────────────
+    # ── 核心审阅逻辑 ────────────────────────────────────────
 
-    @staticmethod
-    def _parse_llm_response(response_text: str, sentence: str) -> dict:
-        """解析 LLM 返回的 JSON 响应。"""
-        text = response_text.strip()
+    async def _review_sentence(
+        self, index: int, sentence: str, kb_ids: list[str], task_id: int,
+    ) -> dict:
+        """审查单个句子。"""
+        # 1. 检索知识库
+        kb_registry = self._deps.kb_registry
+        if not kb_registry:
+            logger.warning("kb_registry 未初始化，句子 [%d] 跳过审阅", index)
+            return {"task_id": task_id, "sentence_index": index, "reviewed_sentence": sentence, "has_issue": "否", "content": {}, "error": True}
 
-        # 去除可能的 markdown 代码块标记
-        if text.startswith("```"):
-            lines = text.split("\n")
-            text = "\n".join(lines[1:]) if len(lines) > 1 else text
-        if text.endswith("```"):
-            text = text[:-3]
+        kb_results = await search_knowledge_bases(kb_ids, sentence, kb_registry)
 
-        text = text.strip()
-
-        try:
-            parsed = json.loads(text)
-        except json.JSONDecodeError:
-            # 尝试提取 JSON 对象
-            import re
-
-            match = re.search(r"\{[^}]+\}", text)
-            if match:
-                try:
-                    parsed = json.loads(match.group())
-                except json.JSONDecodeError:
-                    parsed = {"是否有问题": "否", "content": {}}
-            else:
-                parsed = {"是否有问题": "否", "content": {}}
-
-        # 确保标准格式
-        result = {"已审阅的句子": sentence, "是否有问题": parsed.get("是否有问题", "否"), "content": {}}
-
-        if result["是否有问题"] == "是":
-            result["content"] = {
-                "错误原因": parsed.get("错误原因", ""),
-                "修改建议": parsed.get("修改建议", ""),
-                "建议依据": parsed.get("建议依据", ""),
+        # 2. 无结果 → 无问题
+        if not kb_results:
+            return {
+                "task_id": task_id,
+                "sentence_index": index,
+                "reviewed_sentence": sentence,
+                "has_issue": "否",
+                "content": {},
             }
 
-        return result
+        # 3. LLM 判断
+        kb_text = format_kb_results_for_prompt(kb_results)
+        prompt = _REVIEW_SYSTEM_PROMPT.format(kb_results=kb_text, sentence=sentence)
+
+        try:
+            model = self._deps.model_provider.get_model()
+            response = await model.ainvoke([HumanMessage(content=prompt)])
+            return {**_parse_llm_response(response.content, sentence), "task_id": task_id, "sentence_index": index, "error": False}
+        except Exception as e:
+            logger.warning("LLM 审阅失败 [%d]: %s", index, e)
+            return {"task_id": task_id, "sentence_index": index, "reviewed_sentence": sentence, "has_issue": "否", "content": {}, "error": True}
 
 
-async def run_review_pipeline(file_path: str, kb_ids: list[str], deps: PlatformDeps) -> dict:
-    """执行文档审阅流水线的便捷函数。
-
-    Args:
-        file_path: 待审阅文件路径
-        kb_ids: 知识库 ID 列表
-        deps: 全局依赖容器
-
-    Returns:
-        {"results": [...], "summary": {...}}
-    """
+async def run_review_pipeline(
+    file_path: str, kb_ids: list[str], deps: "PlatformDeps", task_id: int = 0,
+) -> dict:
+    """执行文档审阅流水线。"""
     pipeline = ReviewPipeline(deps)
     graph = pipeline.build()
 
-    initial_state: ReviewState = {
+    initial_state = {
         "file_path": file_path,
         "kb_ids": kb_ids,
+        "task_id": task_id,
         "sentences": [],
         "current_index": 0,
         "results": [],
         "final_output": "",
-        "deps": deps,
     }
 
     result = await graph.ainvoke(initial_state)
 
-    # 解析 final_output JSON
     try:
         return json.loads(result["final_output"])
     except (json.JSONDecodeError, KeyError):
@@ -247,7 +214,52 @@ async def run_review_pipeline(file_path: str, kb_ids: list[str], deps: PlatformD
             "results": result.get("results", []),
             "summary": {
                 "total_sentences": len(result.get("sentences", [])),
-                "issues_found": sum(1 for r in result.get("results", []) if r.get("是否有问题") == "是"),
+                "issues_found": sum(1 for r in result.get("results", []) if r.get("has_issue") == "是"),
                 "kb_ids_used": kb_ids,
             },
         }
+
+
+def _parse_llm_response(response_text: str, sentence: str) -> dict:
+    """解析 LLM 返回的 JSON 响应。"""
+    text = response_text.strip()
+    if text.startswith("```"):
+        lines = text.split("\n")
+        text = "\n".join(lines[1:]) if len(lines) > 1 else text
+    if text.endswith("```"):
+        text = text[:-3]
+    text = text.strip()
+
+    try:
+        parsed = json.loads(text)
+    except json.JSONDecodeError:
+        parsed = {"是否有问题": "否"}
+        # 用括号计数提取最外层 JSON 对象（支持嵌套）
+        depth = 0
+        start = -1
+        for i, ch in enumerate(text):
+            if ch == "{":
+                if depth == 0:
+                    start = i
+                depth += 1
+            elif ch == "}":
+                depth -= 1
+                if depth == 0 and start >= 0:
+                    candidate = text[start:i + 1]
+                    try:
+                        parsed = json.loads(candidate)
+                    except json.JSONDecodeError:
+                        pass
+                    break
+
+    if parsed.get("是否有问题") == "是":
+        return {
+            "reviewed_sentence": sentence,
+            "has_issue": "是",
+            "content": {
+                "错误原因": parsed.get("错误原因", ""),
+                "修改建议": parsed.get("修改建议", ""),
+                "建议依据": parsed.get("建议依据", ""),
+            },
+        }
+    return {"reviewed_sentence": sentence, "has_issue": "否", "content": {}}

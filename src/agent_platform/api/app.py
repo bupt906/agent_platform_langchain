@@ -17,7 +17,7 @@ from agent_platform.api.middleware import (
     ObservabilityMiddleware,
     RateLimitMiddleware,
 )
-from agent_platform.api.routes import audit, chat, hitl, review, skills
+from agent_platform.api.routes import audit, callback, chat, hitl, review, skills
 from agent_platform.config.settings import settings
 from agent_platform.core.deps import PlatformDeps
 from agent_platform.core.registry import SkillRegistry
@@ -87,6 +87,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
             declarative_registry=declarative_registry,
             kb_registry=kb_registry,
         )
+        deps._callback_base = settings.callback_base_url
         app.state.deps = deps
         app.state.settings = settings
 
@@ -128,6 +129,7 @@ app.include_router(skills.router)
 app.include_router(audit.router)
 app.include_router(hitl.router)
 app.include_router(review.router)
+app.include_router(callback.router)
 
 
 @app.get("/favicon.ico")
