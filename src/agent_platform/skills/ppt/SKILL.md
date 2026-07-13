@@ -73,9 +73,12 @@ slide.shapes.add_picture("chart.png", Inches(1), Inches(3), Inches(11), Inches(3
 ## 保存
 
 ```python
-prs.save("output.pptx")
-print("PPT 已保存为 output.pptx")
+save_path = f"{OUTPUT_DIR}/output.pptx"
+prs.save(save_path)
+print(f"PPT 已保存到 {save_path}")
 ```
+
+**重要**：保存路径必须使用 `OUTPUT_DIR` 变量，如 `f"{OUTPUT_DIR}/output.pptx"`。
 
 ## 注意事项
 

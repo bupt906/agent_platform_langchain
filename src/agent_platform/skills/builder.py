@@ -5,16 +5,13 @@
 
 from __future__ import annotations
 
-import functools
-import hashlib
 import json
 import logging
 from typing import TYPE_CHECKING
 
+from langchain.agents import create_agent
 from langchain_core.language_models import BaseChatModel
-from langchain_core.messages import ToolMessage
 from langchain_core.tools import BaseTool
-from langgraph.prebuilt import ToolNode, create_react_agent
 
 from agent_platform.skills.registry import DeclarativeSkill
 
@@ -49,10 +46,7 @@ def build_skill_agent(
     all_tools = list(tools) + [complete_tool]
     prompt = _build_prompt(skill, max_tool_calls)
 
-    wrap_fn = _make_tool_counter(max_tool_calls)
-    tool_node = ToolNode(all_tools, wrap_tool_call=wrap_fn)
-
-    return create_react_agent(model, tool_node, prompt=prompt)
+    return create_agent(model, all_tools, system_prompt=prompt)
 
 
 def _build_prompt(skill: DeclarativeSkill, max_tool_calls: int) -> str:
@@ -73,46 +67,6 @@ def _build_prompt(skill: DeclarativeSkill, max_tool_calls: int) -> str:
     )
 
     return "\n".join(parts)
-
-
-def _make_tool_counter(max_calls: int):
-    """包装工具调用：超过次数上限或重复调用时拦截。"""
-    call_history: list[str] = []
-
-    def wrap_tool_call(request, execute):
-        call = request.tool_call
-        tool_name = call["name"]
-
-        # complete 工具不受次数限制
-        if tool_name.startswith("complete"):
-            return execute(request)
-
-        fingerprint = _fingerprint(tool_name, call.get("args", {}))
-
-        if len(call_history) >= max_calls:
-            return ToolMessage(
-                content=f"[系统提示：工具调用次数已达上限({max_calls})，请立即调用 {skill.complete_tool} 提交结果]",
-                tool_call_id=call["id"],
-                name=tool_name,
-            )
-
-        if fingerprint in call_history[-3:]:
-            return ToolMessage(
-                content="[系统提示：重复调用已被阻止，请基于已有信息调用 complete 工具提交结果]",
-                tool_call_id=call["id"],
-                name=tool_name,
-            )
-
-        result = execute(request)
-        call_history.append(fingerprint)
-        return result
-
-    return wrap_tool_call
-
-
-def _fingerprint(tool_name: str, args: dict) -> str:
-    raw = tool_name + json.dumps(args, sort_keys=True, ensure_ascii=False)
-    return hashlib.sha256(raw.encode()).hexdigest()[:16]
 
 
 def extract_complete_result(messages: list) -> dict:
