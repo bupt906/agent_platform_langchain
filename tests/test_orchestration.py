@@ -22,7 +22,7 @@ from agent_platform.graph.patterns import (
 class TestEventSerialization:
     def test_step_start_event_to_dict(self):
         event = StepStartEvent(
-            step_id="s1", skill_name="qa", description="测试"
+            step_id="s1", skill_name="document_review", description="测试"
         )
         d = event.to_dict()
         assert d["type"] == "step_start"
@@ -30,14 +30,14 @@ class TestEventSerialization:
         assert "timestamp" in d
 
     def test_plan_event_to_dict(self):
-        event = PlanEvent(subtasks=[{"id": "s1", "skill_name": "qa"}])
+        event = PlanEvent(subtasks=[{"id": "s1", "skill_name": "document_review"}])
         d = event.to_dict()
         assert d["type"] == "plan"
         assert len(d["subtasks"]) == 1
 
     def test_event_json_roundtrip(self):
         event = StepDoneEvent(
-            step_id="s1", skill_name="qa", result_summary="结果摘要"
+            step_id="s1", skill_name="document_review", result_summary="结果摘要"
         )
         d = event.to_dict()
         json_str = json.dumps(d, ensure_ascii=False)
@@ -59,10 +59,10 @@ class TestExecutionPlan:
         plan = ExecutionPlan(
             mode="sequential",
             subtasks=[
-                SubTask(id="s1", skill_name="data_query", description="查询数据"),
+                SubTask(id="s1", skill_name="knowledge-graph-extraction", description="查询数据"),
                 SubTask(
                     id="s2",
-                    skill_name="contract_review",
+                    skill_name="knowledge-graph-extraction",
                     description="审查合同",
                     depends_on=["s1"],
                 ),
@@ -76,18 +76,18 @@ class TestExecutionPlan:
         plan = ExecutionPlan(
             mode="parallel",
             subtasks=[
-                SubTask(id="s1", skill_name="qa", description="知识检索"),
-                SubTask(id="s2", skill_name="data_query", description="数据查询"),
+                SubTask(id="s1", skill_name="document_review", description="知识检索"),
+                SubTask(id="s2", skill_name="knowledge-graph-extraction", description="数据查询"),
             ],
         )
         assert plan.mode == "parallel"
         assert len(plan.subtasks) == 2
 
     def test_subtask_model_dump(self):
-        st = SubTask(id="s1", skill_name="qa", description="测试")
+        st = SubTask(id="s1", skill_name="document_review", description="测试")
         d = st.model_dump()
         assert d["id"] == "s1"
-        assert d["skill_name"] == "qa"
+        assert d["skill_name"] == "document_review"
         assert d["depends_on"] == []
 
     def test_execution_plan_model_dump_roundtrip(self):
@@ -95,8 +95,8 @@ class TestExecutionPlan:
         plan = ExecutionPlan(
             mode="orchestrator",
             subtasks=[
-                SubTask(id="s1", skill_name="qa", description="检索"),
-                SubTask(id="s2", skill_name="data_query", description="查询"),
+                SubTask(id="s1", skill_name="document_review", description="检索"),
+                SubTask(id="s2", skill_name="knowledge-graph-extraction", description="查询"),
             ],
             synthesis_prompt="综合以上结果回答问题。",
         )
@@ -113,9 +113,9 @@ class TestSequentialGraphStructure:
     def test_build_sequential_graph_creates_nodes_for_each_subtask(self):
         """每个 subtask 对应一个 step_X 节点。"""
         subtasks = [
-            SubTask(id="s1", skill_name="qa", description="步骤1"),
-            SubTask(id="s2", skill_name="data_query", description="步骤2"),
-            SubTask(id="s3", skill_name="contract_review", description="步骤3"),
+            SubTask(id="s1", skill_name="document_review", description="步骤1"),
+            SubTask(id="s2", skill_name="knowledge-graph-extraction", description="步骤2"),
+            SubTask(id="s3", skill_name="knowledge-graph-extraction", description="步骤3"),
         ]
         # build_sequential_graph 需要 skills dict 和 deps
         # 此处验证 Subtask 数据结构正确即可；实际图执行需要模型

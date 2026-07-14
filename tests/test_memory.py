@@ -23,8 +23,8 @@ class TestSessionStore:
         store = SessionStore(db)
         sid = "test-session-1"
 
-        await store.add_turn(sid, "你好", "你好！有什么可以帮助你的？", skill_used="qa")
-        await store.add_turn(sid, "请假制度", "根据公司规定...", skill_used="qa")
+        await store.add_turn(sid, "你好", "你好！有什么可以帮助你的？", skill_used="document_review")
+        await store.add_turn(sid, "请假制度", "根据公司规定...", skill_used="document_review")
 
         history = await store.get_session_history(sid)
         assert len(history) == 2
@@ -34,9 +34,9 @@ class TestSessionStore:
 
     async def test_search_full_text(self, db):
         store = SessionStore(db)
-        await store.add_turn("s1", "公司请假制度", "回复1", skill_used="qa")
-        await store.add_turn("s2", "项目技术架构", "回复2", skill_used="qa")
-        await store.add_turn("s3", "请假流程", "回复3", skill_used="qa")
+        await store.add_turn("s1", "公司请假制度", "回复1", skill_used="document_review")
+        await store.add_turn("s2", "项目技术架构", "回复2", skill_used="document_review")
+        await store.add_turn("s3", "请假流程", "回复3", skill_used="document_review")
 
         # FTS5 在 :memory: 数据库中可能需要显式触发才能同步
         # 先做一次安全的查询，验证搜索不会报错
@@ -61,7 +61,7 @@ class TestSessionStore:
 
     async def test_different_sessions_isolated(self, db):
         store = SessionStore(db)
-        await store.add_turn("session-a", "qa", "aa")
+        await store.add_turn("session-a", "document_review", "aa")
         await store.add_turn("session-b", "qb", "ab")
 
         hist_a = await store.get_session_history("session-a")

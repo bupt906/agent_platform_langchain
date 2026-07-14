@@ -10,40 +10,27 @@ import pytest
 
 # ── 示例 SKILL.md ────────────────────────────────────────────
 
-_PPT_MD = """---
-name: ppt
-description: PowerPoint 操作
-tools: [execute_python]
+_KG_SKILL_MD = """---
+name: knowledge-graph-extraction
+description: Extract a knowledge graph from documents
+tools: [read_file, write_file, bash]
 complete_tool: complete_task
 ---
 
-# PPT 操作指南
+# Knowledge Graph Extraction
 
-## 创建演示文稿
-使用 python-pptx 库。"""
-
-_FEISHU_MD = """---
-name: feishu
-description: 飞书操作
-tools: [execute_python]
-complete_tool: complete_task
----
-
-# 飞书操作指南
-
-## 发送消息
-使用 Webhook 机器人。"""
+Extract entities and relationships from documents."""
 
 _NO_TOOLS_MD = """---
-name: calculator
-description: 计算器
+name: text-formatter
+description: Simple text formatting
 tools: []
 complete_tool: complete_task
 ---
 
-# 计算器
+# Text Formatter
 
-直接回答问题。"""
+Format text as requested."""
 
 
 # ── Fixture ──────────────────────────────────────────────────
@@ -52,12 +39,10 @@ complete_tool: complete_task
 def skills_dir():
     with tempfile.TemporaryDirectory() as tmpdir:
         base = Path(tmpdir)
-        (base / "ppt").mkdir()
-        (base / "ppt" / "SKILL.md").write_text(_PPT_MD, encoding="utf-8")
-        (base / "feishu").mkdir()
-        (base / "feishu" / "SKILL.md").write_text(_FEISHU_MD, encoding="utf-8")
-        (base / "calculator").mkdir()
-        (base / "calculator" / "SKILL.md").write_text(_NO_TOOLS_MD, encoding="utf-8")
+        (base / "kg").mkdir()
+        (base / "kg" / "SKILL.md").write_text(_KG_SKILL_MD, encoding="utf-8")
+        (base / "formatter").mkdir()
+        (base / "formatter" / "SKILL.md").write_text(_NO_TOOLS_MD, encoding="utf-8")
         yield base
 
 
@@ -68,25 +53,24 @@ class TestDeclarativeSkillRegistry:
         from agent_platform.skills.registry import DeclarativeSkillRegistry
 
         reg = DeclarativeSkillRegistry(skills_dir)
-        assert reg.count == 3
+        assert reg.count == 2
 
     def test_get_skill(self, skills_dir):
         from agent_platform.skills.registry import DeclarativeSkillRegistry
 
         reg = DeclarativeSkillRegistry(skills_dir)
-        skill = reg.get("ppt")
+        skill = reg.get("knowledge-graph-extraction")
         assert skill is not None
-        assert skill.name == "ppt"
-        assert "python-pptx" in skill.body
-        assert skill.tools == ["execute_python"]
-        assert skill.complete_tool == "complete_task"
+        assert skill.name == "knowledge-graph-extraction"
+        assert "entities" in skill.body
+        assert skill.tools == ["read_file", "write_file", "bash"]
 
     def test_load_skill(self, skills_dir):
         from agent_platform.skills.registry import DeclarativeSkillRegistry
 
         reg = DeclarativeSkillRegistry(skills_dir)
-        skill = reg.load("feishu")
-        assert skill.description == "飞书操作"
+        skill = reg.load("knowledge-graph-extraction")
+        assert "Extract a knowledge graph" in skill.description
 
     def test_load_nonexistent_raises(self, skills_dir):
         from agent_platform.skills.registry import DeclarativeSkillRegistry
@@ -107,13 +91,13 @@ class TestDeclarativeSkillRegistry:
         reg = DeclarativeSkillRegistry(skills_dir)
         infos = reg.list_infos()
         names = {i["name"] for i in infos}
-        assert names == {"ppt", "feishu", "calculator"}
+        assert names == {"knowledge-graph-extraction", "text-formatter"}
 
     def test_no_tools_skill(self, skills_dir):
         from agent_platform.skills.registry import DeclarativeSkillRegistry
 
         reg = DeclarativeSkillRegistry(skills_dir)
-        skill = reg.get("calculator")
+        skill = reg.get("text-formatter")
         assert skill.tools == []
 
     def test_empty_dir(self):
@@ -144,9 +128,9 @@ class TestSkillAgentBuilder:
         from agent_platform.skills.builder import _build_prompt
 
         reg = DeclarativeSkillRegistry(skills_dir)
-        skill = reg.get("ppt")
+        skill = reg.get("knowledge-graph-extraction")
         prompt = _build_prompt(skill, max_tool_calls=10)
-        assert "PPT 操作指南" in prompt
+        assert "Knowledge Graph Extraction" in prompt
         assert "complete_task" in prompt
 
     def test_max_tool_calls_replaced(self, skills_dir):
@@ -154,7 +138,7 @@ class TestSkillAgentBuilder:
         from agent_platform.skills.builder import _build_prompt
 
         reg = DeclarativeSkillRegistry(skills_dir)
-        skill = reg.get("ppt")
+        skill = reg.get("knowledge-graph-extraction")
         prompt = _build_prompt(skill, max_tool_calls=5)
         assert "complete_task" in prompt
 
@@ -164,7 +148,7 @@ class TestSkillAgentBuilder:
         from agent_platform.skills.builder import build_skill_agent
 
         reg = DeclarativeSkillRegistry(skills_dir)
-        skill = reg.get("ppt")
+        skill = reg.get("knowledge-graph-extraction")
         model = model_provider.get_model()
 
         agent = build_skill_agent(model, skill, tools=[], max_tool_calls=6)

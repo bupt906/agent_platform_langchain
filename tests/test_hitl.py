@@ -38,7 +38,7 @@ class TestApprovalTypes:
             session_id="s1",
             thread_id="t1",
             node_id="step_sql",
-            skill_name="data_query",
+            skill_name="document_review",
             operation="sql_execution",
             details="执行 SQL: SELECT * FROM users",
         )
@@ -68,7 +68,7 @@ class TestApprovalStore:
         req = ApprovalRequest(
             session_id="s1",
             thread_id="t1",
-            skill_name="data_query",
+            skill_name="document_review",
             operation="sql_execution",
             details="SELECT * FROM users",
         )
@@ -77,7 +77,7 @@ class TestApprovalStore:
 
         fetched = await approval_store.get_request(rid)
         assert fetched is not None
-        assert fetched["skill_name"] == "data_query"
+        assert fetched["skill_name"] == "document_review"
         assert fetched["status"] == "pending"
 
     async def test_set_status(self, approval_store):
@@ -127,7 +127,7 @@ class TestHITLEvents:
         event = ApprovalNeededEvent(
             approval_id="abc",
             operation="sql_execution",
-            skill_name="data_query",
+            skill_name="document_review",
             details="执行 SQL",
         )
         d = event.to_dict()

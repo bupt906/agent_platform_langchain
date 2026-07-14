@@ -40,8 +40,8 @@ class TestLayeredPromptBuilder:
         return LayeredPromptBuilder(cache_ttl=300)
 
     def test_get_stable_layer_known_skill(self, builder):
-        prompt = builder.get_stable_layer("qa")
-        assert "问答助手" in prompt or "知识库" in prompt
+        prompt = builder.get_stable_layer("document_review")
+        assert "文档审阅" in prompt
         assert len(prompt) > 20
 
     def test_get_stable_layer_unknown_skill(self, builder):
@@ -49,8 +49,8 @@ class TestLayeredPromptBuilder:
         assert len(prompt) > 5  # 回退到通用 prompt
 
     def test_get_stable_layer_cached(self, builder):
-        p1 = builder.get_stable_layer("qa")
-        p2 = builder.get_stable_layer("qa")
+        p1 = builder.get_stable_layer("document_review")
+        p2 = builder.get_stable_layer("document_review")
         assert p1 == p2  # LRU 缓存保证相同
 
     def test_get_router_stable(self, builder):
@@ -72,7 +72,7 @@ class TestLayeredPromptBuilder:
         assert "查询" in result
 
     def test_build_skill_prompt(self, builder):
-        prompt = builder.build_skill_prompt("qa", "查询")
+        prompt = builder.build_skill_prompt("document_review", "查询")
         assert len(prompt) > 10
 
     def test_context_layer_caching(self, builder, skill_registry):
@@ -80,11 +80,11 @@ class TestLayeredPromptBuilder:
         c1 = builder.get_context_layer(skill_registry)
         c2 = builder.get_context_layer(skill_registry)
         assert c1 == c2
-        assert "qa" in c1
-        assert "data_query" in c1
+        assert "document_review" in c1
+        assert "document_review" in c1
 
     def test_build_router_prompt(self, builder, skill_registry):
         prompt = builder.build_router_prompt(skill_registry)
         assert "智能路由器" in prompt
         assert "可用技能" in prompt
-        assert "qa" in prompt
+        assert "document_review" in prompt

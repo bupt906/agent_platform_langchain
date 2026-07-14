@@ -68,10 +68,6 @@ agent_platform_langchain/
 │   │
 │   ├── agents/                     # Agent 插件目录（自动发现）
 │   │   ├── base.py                 # Agent 基类 BaseSkill
-│   │   ├── qa/                     # 问答 Agent
-│   │   ├── data_query/             # 问数 Agent
-│   │   ├── contract_review/        # 合同审查 Agent
-│   │   ├── composite/              # 组合 Agent
 │   │   └── document_review/        # AI 文档审阅 Agent
 │   ├── knowledge_bases/            # 知识库目录（向量 RAG）
 │   │   ├── registry.py             #   KnowledgeBaseRegistry
@@ -85,9 +81,7 @@ agent_platform_langchain/
 │   │   ├── registry.py              #   DeclarativeSkillRegistry
 │   │   ├── builder.py               #   build_skill_agent()
 │   │   ├── complete.py              #   complete_xxx 工具
-│   │   ├── ppt/SKILL.md             #   PowerPoint 操作 Skill
-│   │   ├── feishu/SKILL.md          #   飞书操作 Skill
-│   │   └── pdf/SKILL.md             #   PDF 操作 Skill
+│   │   └── knowledge-graph-extraction/  #   知识图谱抽取 Skill
 │   │
 │   ├── core/
 │   │   ├── deps.py                 # 全局依赖容器
@@ -161,12 +155,12 @@ curl -X POST http://localhost:8000/chat \
 # 指定 Python Agent（agents/ 目录）
 curl -X POST http://localhost:8000/chat \
   -H "Content-Type: application/json" \
-  -d '{"agent": "data_query", "message": "上个月销售额是多少？"}'
+  -d '{"agent": "document_review", "message": "上个月销售额是多少？"}'
 
 # 指定声明式 Skill（skills/ 目录）
 curl -X POST http://localhost:8000/chat \
   -H "Content-Type: application/json" \
-  -d '{"skill": "ppt", "message": "做一个公司介绍PPT"}'
+  -d '{"skill": "knowledge-graph-extraction", "message": "从文档中抽取知识图谱"}'
 
 # SSE 流式对话
 curl -N -X POST http://localhost:8000/chat/stream \
@@ -177,8 +171,8 @@ curl -N -X POST http://localhost:8000/chat/stream \
 agent-chat "帮我审查这份合同"
 
 # CLI 同样支持指定 Agent、Skill、模型和会话
-agent-chat --agent data_query --session-id demo "上个月销售额是多少？"
-agent-chat --skill ppt --model deepseek:deepseek-chat "做一个公司介绍PPT"
+agent-chat --agent document_review --session-id demo "上个月销售额是多少？"
+agent-chat --skill knowledge-graph-extraction --model deepseek:deepseek-chat "从文档中抽取知识图谱"
 
 # 查看所有 Agent 列表
 curl http://localhost:8000/skills
@@ -252,8 +246,8 @@ curl http://localhost:8000/hitl/approvals
 ```json
 {
   "message": "用户问题",
-  "agent": "qa",                 // 可选，指定 Python Agent（agents/ 目录）；省略则自动路由
-  "skill": "ppt",                // 可选，指定声明式 Skill（skills/ 目录）；省略则自动路由
+  "agent": "document_review",                 // 可选，指定 Python Agent（agents/ 目录）；省略则自动路由
+  "skill": "knowledge-graph-extraction", // 可选，指定声明式 Skill（skills/ 目录）；省略则自动路由
   "model": "deepseek:deepseek-chat", // 可选，指定模型；省略使用默认模型
   "session_id": "abc123"         // 可选，会话 ID，用于多轮对话记忆
 }
@@ -266,7 +260,7 @@ curl http://localhost:8000/hitl/approvals
 ```json
 {
   "reply": "Agent 的回答内容",
-  "skill_used": "qa",           // 实际使用的技能名称
+  "skill_used": "document_review",           // 实际使用的技能名称
   "model_used": "",             // 实际使用的模型
   "session_id": "abc123",       // 会话 ID
   "approval_required": false,   // 是否需要人工审批
@@ -287,7 +281,7 @@ curl http://localhost:8000/hitl/approvals
 
 ```
 event: routing
-data: {"type": "routing", "skill": "qa", "mode": "single", "confidence": 0.95}
+data: {"type": "routing", "skill": "document_review", "mode": "single", "confidence": 0.95}
 
 event: delta
 data: {"type": "delta", "content": "根据"}
@@ -296,7 +290,7 @@ event: delta
 data: {"type": "delta", "content": "知识库"}
 
 event: done
-data: {"type": "done", "skill": "qa"}
+data: {"type": "done", "skill": "document_review"}
 ```
 
 **多 Agent 模式的 SSE 事件**：
@@ -309,10 +303,10 @@ event: plan
 data: {"type": "plan", "mode": "parallel", "subtasks": [...]}
 
 event: step_start
-data: {"type": "step_start", "step_id": "s1", "skill_name": "contract_review", "description": "审查合同"}
+data: {"type": "step_start", "step_id": "s1", "skill_name": "document_review", "description": "审查合同"}
 
 event: step_done
-data: {"type": "step_done", "step_id": "s1", "skill_name": "contract_review", "result_summary": "..."}
+data: {"type": "step_done", "step_id": "s1", "skill_name": "document_review", "result_summary": "..."}
 
 event: synthesis_start
 data: {"type": "synthesis_start"}
@@ -328,7 +322,7 @@ data: {"type": "done", "skill": "multi_agent"}
 
 ```
 event: approval_needed
-data: {"type": "approval_needed", "approval_id": "a1b2c3", "operation": "sql_execution", "skill_name": "data_query", "details": "执行 SQL: SELECT * FROM users"}
+data: {"type": "approval_needed", "approval_id": "a1b2c3", "operation": "sql_execution", "skill_name": "document_review", "details": "执行 SQL: SELECT * FROM users"}
 
 event: approval_result
 data: {"type": "approval_result", "approval_id": "a1b2c3", "status": "approved"}
@@ -344,16 +338,16 @@ data: {"type": "approval_result", "approval_id": "a1b2c3", "status": "approved"}
 {
   "skills": [
     {
-      "name": "qa",
+      "name": "document_review",
       "description": "通用知识问答，基于 RAG 检索知识库回答用户问题",
       "examples": ["公司的请假制度是什么？", "项目的技术架构是怎样的？"],
       "dependencies": []
     },
     {
-      "name": "data_contract_review",
+      "name": "knowledge-graph-extraction",
       "description": "结合数据查询和合同审查...",
       "examples": ["帮我审查这份采购合同，并验证金额是否与系统数据一致"],
-      "dependencies": ["data_query", "contract_review"]
+      "dependencies": ["document_review", "document_review"]
     }
   ],
   "total": 4
@@ -385,7 +379,7 @@ data: {"type": "approval_result", "approval_id": "a1b2c3", "status": "approved"}
   "total_tokens": 450000,
   "total_duration_ms": 120000.5,
   "avg_duration_ms": 78.8,
-  "by_skill": {"qa": 800, "data_query": 500, "contract_review": 223},
+  "by_skill": {"document_review": 800, "document_review": 500, "document_review": 223},
   "errors": 12
 }
 ```
@@ -569,8 +563,8 @@ class RouterDecision(BaseModel):
 
 ```
 POST /chat
-    ├── "agent": "qa"       → execute_skill_direct() → agents/qa
-    ├── "skill": "ppt"      → _execute_declarative_skill_direct() → skills/ppt
+    ├── "agent": "document_review"       → execute_skill_direct() → agents/document_review
+    ├── "skill": "knowledge-graph-extraction" → _execute_declarative_skill_direct() → skills/knowledge-graph-extraction
     │
     └── 两者都空（自动路由）
         resolve_route() → RouterDecision
@@ -643,7 +637,7 @@ POST /chat
 
 ```python
 # 会话历史
-await deps.session_store.add_turn(session_id, user_msg, reply, skill_used="qa")
+await deps.session_store.add_turn(session_id, user_msg, reply, skill_used="document_review")
 history = await deps.session_store.get_session_history(session_id, limit=50)
 
 # 全文搜索
@@ -690,7 +684,7 @@ prefs = await deps.user_profile_store.get_profile(session_id)
 
 ```bash
 # 查询日志
-curl http://localhost:8000/audit?skill=data_query&limit=50
+curl http://localhost:8000/audit?skill=document_review&limit=50
 
 # 聚合统计
 curl http://localhost:8000/audit/stats?days=30
@@ -711,7 +705,7 @@ curl http://localhost:8000/audit/{audit_id}/tools
 │  LRU 缓存，TTL 300s                  │  示例："你是一个智能问答助手..."
 ├─────────────────────────────────────┤
 │  上下文层 (Context)                    │  技能描述、工具列表
-│  技能注册表变更时刷新                    │  示例："可用技能: qa, data_query..."
+│  技能注册表变更时刷新                    │  示例："可用技能: document_review, knowledge-graph-extraction..."
 ├─────────────────────────────────────┤
 │  易变层 (Volatile)                     │  用户查询、对话历史
 │  每次请求动态构建                       │  示例："用户问题: 请假制度..."
@@ -802,7 +796,7 @@ results = await execute_tools_parallel(tool_calls, max_concurrency=5)
 |----------|--------|------|
 | `HITL_ENABLED` | `true` | 全局启用/禁用 HITL |
 | `HITL_APPROVAL_TIMEOUT` | `300` | 审批超时秒数 |
-| `HITL_SENSITIVE_SKILLS` | `["data_query", "contract_review"]` | 需要审批的技能列表 |
+| `HITL_SENSITIVE_SKILLS` | `["document_review", "document_review"]` | 需要审批的技能列表 |
 | `HITL_AUTO_APPROVE_LOW_RISK` | `false` | 是否自动批准低风险操作 |
 
 ### API

@@ -83,7 +83,7 @@ class Settings(BaseSettings):
     # ── Human-in-the-loop ──
     hitl_enabled: bool = True  # 全局启用/禁用 HITL
     hitl_approval_timeout: int = 300  # 审批超时（秒）
-    hitl_sensitive_skills: list[str] = ["data_query", "contract_review"]  # 需审批的技能
+    hitl_sensitive_skills: list[str] = ["document_review"]  # 需审批的技能
     hitl_auto_approve_low_risk: bool = False  # 自动批准低风险操作
 
     # ── 审阅回调 ──
