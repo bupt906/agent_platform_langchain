@@ -15,4 +15,7 @@ venv/
 .DS_Store
 *.log
 *.db
+*.db-shm
+*.db-wal
+docs/
 .claude/

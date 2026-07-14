@@ -101,6 +101,7 @@ async def search_knowledge_bases(
         {
             "kb_id": r.kb_id,
             "kb_name": r.kb_name,
+            "kb_file": r.kb_file,
             "entry": r.entry,
             "relevance": round(r.relevance, 3),
         }
@@ -116,7 +117,8 @@ def format_kb_results_for_prompt(results: list[dict]) -> str:
     parts = []
     for i, r in enumerate(results, 1):
         entry = r["entry"]
-        lines = [f"### 检索结果 {i}（来源：{r['kb_name']}，相关度：{r['relevance']}）"]
+        kb_file = r.get("kb_file", "")
+        lines = [f"### 检索结果 {i}（知识库文件：{kb_file}，相关度：{r['relevance']}）"]
         for k, v in entry.items():
             if k != "原文":
                 lines.append(f"- {k}：{v}")

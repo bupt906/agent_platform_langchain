@@ -207,8 +207,9 @@ class TestSearchResult:
 
     def test_search_result_fields(self):
         entry = {"规则": "测试", "来源": "GB"}
-        sr = SearchResult(kb_id="k1", kb_name="知识库1", entry=entry, relevance=0.85)
+        sr = SearchResult(kb_id="k1", kb_name="知识库1", kb_file="test.md", entry=entry, relevance=0.85)
         assert sr.kb_id == "k1"
+        assert sr.kb_file == "test.md"
         assert sr.relevance == 0.85
 
 
@@ -227,18 +228,22 @@ class TestReviewPipeline:
         graph = pipeline.build()
         assert graph is not None
 
-    def test_parse_llm_response_yes(self):
+    def test_parse_llm_response_yes_new_format(self):
+        """新英文格式 + 结构化 reference。"""
         from agent_platform.agents.document_review.pipeline import _parse_llm_response
 
-        response = '{"是否有问题": "是", "错误原因": "使用了禁用词", "修改建议": "改为审慎表述", "建议依据": "GB 3100"}'
+        response = '{"has_issue": "是", "error_reason": "禁用词", "suggestion": "改表述", "reference": {"kb_id": "compliance", "kb_file": "合规知识库", "content": "禁止使用..."}}'
         result = _parse_llm_response(response, "测试句子")
         assert result["has_issue"] == "是"
-        assert result["content"]["错误原因"] == "使用了禁用词"
+        assert result["content"]["error_reason"] == "禁用词"
+        assert result["content"]["suggestion"] == "改表述"
+        assert result["content"]["reference"]["kb_id"] == "compliance"
+        assert result["content"]["reference"]["kb_file"] == "合规知识库"
 
     def test_parse_llm_response_no(self):
         from agent_platform.agents.document_review.pipeline import _parse_llm_response
 
-        response = '{"是否有问题": "否"}'
+        response = '{"has_issue": "否"}'
         result = _parse_llm_response(response, "测试句子")
         assert result["has_issue"] == "否"
         assert result["content"] == {}
@@ -246,7 +251,7 @@ class TestReviewPipeline:
     def test_parse_llm_response_with_markdown(self):
         from agent_platform.agents.document_review.pipeline import _parse_llm_response
 
-        response = '```json\n{"是否有问题": "否"}\n```'
+        response = '```json\n{"has_issue": "否"}\n```'
         result = _parse_llm_response(response, "测试句子")
         assert result["has_issue"] == "否"
 
@@ -266,7 +271,7 @@ class TestReviewTools:
         assert "无相关" in result
 
     def test_format_kb_results_with_data(self):
-        data = [{"kb_id": "test", "kb_name": "测试", "entry": {"规则": "必须使用法定单位", "来源": "GB"}, "relevance": 0.85}]
+        data = [{"kb_id": "test", "kb_name": "测试", "kb_file": "test.md", "entry": {"规则": "必须使用法定单位", "来源": "GB"}, "relevance": 0.85}]
         result = format_kb_results_for_prompt(data)
-        assert "测试" in result
+        assert "test.md" in result
         assert "GB" in result

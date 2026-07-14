@@ -39,10 +39,12 @@ _REVIEW_SYSTEM_PROMPT = """\
 ## 输出格式
 对每个句子，返回一个 JSON 对象（仅一行，不要换行）：
 
-{{"是否有问题": "是", "错误原因": "...", "修改建议": "...", "建议依据": "..."}}
+{{"has_issue": "是", "error_reason": "...", "suggestion": "...", "reference": {{"kb_id": "知识库id", "kb_file": "知识库文件名", "content": "引用的知识库原文"}}}}
 
 如果无问题：
-{{"是否有问题": "否"}}
+{{"has_issue": "否"}}
+
+注意：reference 中的 kb_id 必须来自检索结果的 kb_id，kb_file 必须使用检索结果中的"知识库文件"（如 compliance.md），content 必须从知识库原文中引用。
 
 ## 本次审查的知识库检索结果
 {kb_results}
@@ -234,8 +236,7 @@ def _parse_llm_response(response_text: str, sentence: str) -> dict:
     try:
         parsed = json.loads(text)
     except json.JSONDecodeError:
-        parsed = {"是否有问题": "否"}
-        # 用括号计数提取最外层 JSON 对象（支持嵌套）
+        parsed = {}
         depth = 0
         start = -1
         for i, ch in enumerate(text):
@@ -253,14 +254,20 @@ def _parse_llm_response(response_text: str, sentence: str) -> dict:
                         pass
                     break
 
-    if parsed.get("是否有问题") == "是":
-        return {
-            "reviewed_sentence": sentence,
-            "has_issue": "是",
-            "content": {
-                "错误原因": parsed.get("错误原因", ""),
-                "修改建议": parsed.get("修改建议", ""),
-                "建议依据": parsed.get("建议依据", ""),
+    if parsed.get("has_issue") != "是":
+        return {"reviewed_sentence": sentence, "has_issue": "否", "content": {}}
+
+    ref = parsed.get("reference", {})
+    return {
+        "reviewed_sentence": sentence,
+        "has_issue": "是",
+        "content": {
+            "error_reason": parsed.get("error_reason", ""),
+            "suggestion": parsed.get("suggestion", ""),
+            "reference": {
+                "kb_id": ref.get("kb_id", ""),
+                "kb_file": ref.get("kb_file", ""),
+                "content": ref.get("content", ""),
             },
-        }
-    return {"reviewed_sentence": sentence, "has_issue": "否", "content": {}}
+        },
+    }

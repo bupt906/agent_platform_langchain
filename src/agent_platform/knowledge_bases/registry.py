@@ -47,6 +47,7 @@ class SearchResult:
 
     kb_id: str
     kb_name: str
+    kb_file: str  # 来源文件名，如 compliance.md
     entry: dict[str, str]
     relevance: float  # 0.0 ~ 1.0，余弦相似度
 
@@ -193,6 +194,7 @@ class KnowledgeBaseRegistry:
                     SearchResult(
                         kb_id=r["kb_id"],
                         kb_name=kb.name if kb else r["kb_id"],
+                        kb_file=Path(kb.source_path).name if kb and kb.source_path else "",
                         entry=r["entry"],
                         relevance=r["distance"],
                     )
@@ -212,7 +214,7 @@ class KnowledgeBaseRegistry:
                 entry_text = " ".join(entry.values())
                 hits = sum(1 for kw in re.findall(r"[一-鿿]{2,}|[a-zA-Z]{3,}", entry_text) if kw in sentence)
                 if hits >= 1:
-                    results.append(SearchResult(kb_id=kb_id, kb_name=kb.name, entry=entry, relevance=min(hits / 10.0, 1.0)))
+                    results.append(SearchResult(kb_id=kb_id, kb_name=kb.name, kb_file=Path(kb.source_path).name if kb.source_path else "", entry=entry, relevance=min(hits / 10.0, 1.0)))
         results.sort(key=lambda x: x.relevance, reverse=True)
         return results
 

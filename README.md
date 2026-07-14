@@ -400,34 +400,80 @@ data: {"type": "approval_result", "approval_id": "a1b2c3", "status": "approved"}
 
 ### POST `/review` — 文档审阅
 
+**请求：**
+
 ```json
 {
   "task_id": 1,
   "file_path": "/path/to/document.docx",
-  "kb_type_code": "mining",
+  "kb_type_code": "",
   "kb_ids": ["compliance", "terminology"]
 }
 ```
 
-逐句审阅文档（支持 txt / md / docx），基于知识库标准返回每句审查结论。审阅完成后自动回调更新任务状态和提交结果。
+| 字段 | 类型 | 必填 | 说明 |
+|------|------|------|------|
+| `task_id` | int | 否 | 任务 ID，默认 0 |
+| `file_path` | string | 是 | 文件路径，支持 txt / md / docx |
+| `kb_type_code` | string | 否 | 知识库类型编码 |
+| `kb_ids` | string[] | 是 | 知识库 ID 列表 |
+
+**响应（ack）：**
+
+```json
+{"task_id": 1, "status": "ok"}
+```
+
+审阅结果不在此返回，通过回调 `POST /api/callback/batch` 推送。
 
 ### GET `/review/kbs` — 列出可用的审查知识库
 
+```json
+{
+  "knowledge_bases": [
+    {"name": "合规性知识库", "description": "...", "id": "compliance", "entry_count": 8}
+  ],
+  "total": 4
+}
+```
+
 ### Callback 接口
 
-审阅流程中自动调用的通知接口：
+配置 `CALLBACK_BASE_URL` 后，审阅流程中自动回调：
 
-| 端点 | 方法 | 说明 |
-|------|------|------|
-| `/api/callback/task/status` | `PUT` | 更新任务状态（"1"=审阅中 "2"=审阅完毕 "3"=失败） |
-| `/api/callback/batch` | `POST` | 批量提交审阅结果 |
-| `/api/callback/task/status/{task_id}` | `GET` | 查询任务状态 |
-| `/api/callback/batch/{task_id}` | `GET` | 查询审阅结果 |
+**任务状态** `PUT {base}/api/callback/task/status`
+```json
+{"task_id": 1, "status": "1"}
+```
+| status | 含义 |
+|--------|------|
+| `"1"` | 审阅中 |
+| `"2"` | 审阅完成 |
+| `"3"` | 审阅失败 |
 
-> 未配置 `CALLBACK_BASE_URL` 时，回调走内置端点，外部可通过以上 GET 接口轮询。
-| `/api/callback/batch/{task_id}` | `GET` | 查询审阅结果 |
-
-> 如果不配置 `CALLBACK_BASE_URL`，回调走内置端点。外部系统可通过以上 GET 接口轮询结果。
+**审阅结果** `POST {base}/api/callback/batch`
+```json
+{
+  "results": [
+    {
+      "task_id": 1,
+      "sentence_index": 0,
+      "reviewed_sentence": "本次采矿作业绝对安全。",
+      "has_issue": "是",
+      "content": {
+        "error_reason": "使用了绝对化用语",
+        "suggestion": "改为'按照安全规程设计，风险可控'",
+        "reference": {
+          "kb_id": "terminology",
+          "kb_file": "terminology.md",
+          "content": "禁止使用'绝对安全'等用语"
+        }
+      },
+      "error": false
+    }
+  ]
+}
+```
 
 ### 认证
 

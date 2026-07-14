@@ -45,7 +45,8 @@ class SubTaskResponse(BaseModel):
 class ReviewRequest(BaseModel):
     """文档审阅请求。"""
 
-    task_id: int
+    uuid: str = ""
+    task_id: int = 0
     file_path: str
     kb_type_code: str = ""
     kb_ids: list[str]
@@ -63,9 +64,7 @@ class ReviewResultItem(BaseModel):
 class ReviewResponse(BaseModel):
     """文档审阅响应。"""
 
-    task_id: int
     results: list[ReviewResultItem]
-    summary: dict
 
 
 # ── Callback ───────────────────────────────────────────────

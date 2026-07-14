@@ -6,7 +6,7 @@ import logging
 
 from fastapi import APIRouter, HTTPException, Request
 
-from agent_platform.api.schemas import ReviewRequest, ReviewResponse
+from agent_platform.api.schemas import ReviewRequest
 from agent_platform.core.deps import PlatformDeps
 
 logger = logging.getLogger(__name__)
@@ -21,9 +21,9 @@ def _get_deps(request: Request) -> PlatformDeps:
 # ── 文档审阅 ──────────────────────────────────────────────
 
 
-@router.post("", response_model=ReviewResponse)
-async def review_document(request: Request, body: ReviewRequest) -> ReviewResponse:
-    """对文档执行逐句审阅。"""
+@router.post("")
+async def review_document(request: Request, body: ReviewRequest) -> dict:
+    """对文档执行逐句审阅，结果通过回调 POST /api/callback/batch 返回。"""
     deps = _get_deps(request)
 
     if not body.kb_ids:
@@ -38,7 +38,7 @@ async def review_document(request: Request, body: ReviewRequest) -> ReviewRespon
                 detail=f"无效的知识库 ID: {invalid}。可用: {available}",
             )
 
-    # 通知任务状态：审阅中
+    # 通知审阅中
     await _notify_task_status(deps, body.task_id, "1")
 
     try:
@@ -51,29 +51,27 @@ async def review_document(request: Request, body: ReviewRequest) -> ReviewRespon
             task_id=body.task_id,
         )
 
-        # 提交审阅结果（先提交，保证失败时结果也不丢失）
         results = result.get("results", [])
+        # uuid 透传到每条结果
+        if body.uuid:
+            for r in results:
+                r["uuid"] = body.uuid
+
         submit_error = None
         if results:
             try:
                 await _submit_review_results(deps, results)
             except Exception as e:
                 submit_error = str(e)
-                logger.error("审阅结果提交失败: %s", e)
+                logger.error("审阅结果回调失败: %s", e)
 
-        # 判断最终状态
         error_count = result.get("summary", {}).get("errors", 0)
         if error_count > 0 or submit_error:
-            logger.warning("审阅部分失败: errors=%d submit_error=%s", error_count, submit_error or "无")
             await _notify_task_status(deps, body.task_id, "3")
         else:
             await _notify_task_status(deps, body.task_id, "2")
 
-        return ReviewResponse(
-            task_id=body.task_id,
-            results=result.get("results", []),
-            summary=result.get("summary", {}),
-        )
+        return {"task_id": body.task_id, "uuid": body.uuid, "status": "ok"}
 
     except FileNotFoundError as e:
         await _notify_task_status(deps, body.task_id, "3")
@@ -107,7 +105,8 @@ async def _notify_task_status(deps: PlatformDeps, task_id: int, status: str) -> 
         payload = {"task_id": task_id, "status": status}
         url = _callback_url(deps, "/api/callback/task/status")
         if url:
-            await deps.http_client.put(url, json=payload)
+            headers = _callback_headers()
+            await deps.http_client.put(url, json=payload, headers=headers)
             logger.info("任务状态更新: task_id=%d status=%s", task_id, status)
     except Exception:
         logger.warning("任务状态回调失败", exc_info=True)
@@ -124,20 +123,32 @@ async def _submit_review_results(deps: PlatformDeps, results: list[dict]) -> Non
                 "reviewed_sentence": r.get("reviewed_sentence", ""),
                 "has_issue": r.get("has_issue", "否"),
                 "content": r.get("content", {}),
+                "error": r.get("error", False),
             }
             for r in results
         ]
         url = _callback_url(deps, "/api/callback/batch")
         if url:
-            resp = await deps.http_client.post(url, json=items)
+            payload = {"results": items}
+            headers = _callback_headers()
+            await deps.http_client.post(url, json=payload, headers=headers)
             logger.info("审阅结果回调: %d 条", len(items))
     except Exception:
         logger.warning("审阅结果回调失败", exc_info=True)
 
 
+def _callback_headers() -> dict:
+    from agent_platform.config.settings import settings
+    token = settings.callback_auth_token
+    if token:
+        return {"X-Auth-Token": token}
+    return {}
+
+
 def _callback_url(deps: PlatformDeps, path: str) -> str | None:
-    base = getattr(deps, "_callback_base", None) or ""
-    if base:
-        return f"{base}{path}"
-    logger.debug("callback_base_url 未配置，跳过回调: %s", path)
-    return None
+    from agent_platform.config.settings import settings
+    base = settings.callback_base_url
+    if not base:
+        logger.debug("callback_base_url 未配置，跳过回调: %s", path)
+        return None
+    return f"{base}{path}"

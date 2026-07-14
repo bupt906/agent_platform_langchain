@@ -76,6 +76,10 @@ class Settings(BaseSettings):
     hitl_sensitive_skills: list[str] = ["data_query", "contract_review"]  # 需审批的技能
     hitl_auto_approve_low_risk: bool = False  # 自动批准低风险操作
 
+    # ── 审阅回调 ──
+    callback_base_url: str = ""  # 审阅结果回调地址，如 http://192.168.22.183:28080
+    callback_auth_token: str = ""  # 回调时携带的 X-Auth-Token
+
     # ── 向量 RAG ──
     embedding_model: str = ""  # embedding 模型（空=复用 default_model 同 provider 的 embedding）
     embedding_dimensions: int = 1536  # 向量维度（deepseek=1536, qwen=1024）
