@@ -96,6 +96,7 @@ class ReviewPipeline:
         logger.info("切分为 %d 个句子", len(sentences))
         if not sentences:
             return {**state, "sentences": [], "current_index": 0, "results": [], "final_output": json.dumps({"results": [], "summary": {"total_sentences": 0, "issues_found": 0, "errors": 0, "kb_ids_used": state.get("kb_ids", [])}}, ensure_ascii=False)}
+        return {**state, "sentences": sentences, "current_index": 0, "results": []}
 
     async def _review_batch_node(self, state: dict) -> dict:
         """批量审阅：从 current_index 开始，并发审查一批句子。"""
