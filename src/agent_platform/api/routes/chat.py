@@ -2,6 +2,10 @@ from __future__ import annotations
 
 import json
 import logging
+from collections.abc import Iterator
+from collections.abc import Mapping
+from dataclasses import replace
+from typing import Any
 
 from fastapi import APIRouter, Request
 from langchain_core.messages import HumanMessage, SystemMessage
@@ -10,7 +14,6 @@ from sse_starlette.sse import EventSourceResponse
 from agent_platform.api.schemas import ChatRequest, ChatResponse
 from agent_platform.core.deps import PlatformDeps
 from agent_platform.core.router import (
-    RouterDecision,
     _execute_declarative_skill_direct,
     execute_decision,
     execute_skill_direct,
@@ -37,21 +40,33 @@ async def chat(request: Request, body: ChatRequest) -> ChatResponse:
     # ── 显式指定：agent / skill 二选一 ──
     if body.agent:
         reply = await execute_skill_direct(
-            body.agent, body.message, deps,
-            model_id=body.model, session_id=body.session_id,
+            body.agent,
+            body.message,
+            deps,
+            model_id=body.model,
+            session_id=body.session_id,
         )
-        return ChatResponse(reply=reply, skill_used=body.agent,
-                           model_used=body.model or deps.model_provider._settings.default_model,
-                           session_id=body.session_id)
+        return ChatResponse(
+            reply=reply,
+            skill_used=body.agent,
+            model_used=body.model or deps.model_provider._settings.default_model,
+            session_id=body.session_id,
+        )
 
     if body.skill:
         reply = await _execute_declarative_skill_direct(
-            body.skill, body.message, deps,
-            model_id=body.model, session_id=body.session_id,
+            body.skill,
+            body.message,
+            deps,
+            model_id=body.model,
+            session_id=body.session_id,
         )
-        return ChatResponse(reply=reply, skill_used=body.skill,
-                           model_used=body.model or deps.model_provider._settings.default_model,
-                           session_id=body.session_id)
+        return ChatResponse(
+            reply=reply,
+            skill_used=body.skill,
+            model_used=body.model or deps.model_provider._settings.default_model,
+            session_id=body.session_id,
+        )
 
     # 自动路由
     decision = await resolve_route(body.message, deps, model_id=body.model)
@@ -62,7 +77,12 @@ async def chat(request: Request, body: ChatRequest) -> ChatResponse:
         model_id=body.model,
         session_id=body.session_id,
     )
-    return ChatResponse(reply=reply, skill_used=decision.skill_name, model_used=body.model or deps.model_provider._settings.default_model, session_id=body.session_id)
+    return ChatResponse(
+        reply=reply,
+        skill_used=decision.skill_name,
+        model_used=body.model or deps.model_provider._settings.default_model,
+        session_id=body.session_id,
+    )
 
 
 # ── 流式对话 ────────────────────────────────────────────────────
@@ -73,6 +93,12 @@ async def chat_stream(request: Request, body: ChatRequest) -> EventSourceRespons
     deps = _get_deps(request)
 
     async def event_generator():
+        # 使用请求级 provider 视图，避免修改全局模型配置或影响其他并发请求。
+        stream_deps = replace(
+            deps,
+            model_provider=deps.model_provider.with_thinking(body.thinking),
+        )
+
         # ── 显式指定 agent / skill / 自动路由 ──
         explicit_mode = ""
         if body.agent:
@@ -94,7 +120,7 @@ async def chat_stream(request: Request, body: ChatRequest) -> EventSourceRespons
             plan = decision.execution_plan
             yield _sse("plan", type="plan", mode=plan.mode, subtasks=[s.model_dump() for s in plan.subtasks])
 
-            engine = OrchestrationEngine(deps)
+            engine = OrchestrationEngine(stream_deps)
             async for event in engine.execute_stream(body.message, plan):
                 yield _sse(event.type, **event.to_dict())
 
@@ -103,26 +129,37 @@ async def chat_stream(request: Request, body: ChatRequest) -> EventSourceRespons
 
         # ── 单技能 / 通用流式 ──
         skill = deps.skill_registry.get(skill_name) if explicit_mode != "skill" else None
-        declarative = deps.declarative_registry.get(skill_name) if explicit_mode != "agent" and deps.declarative_registry else None
+        declarative = (
+            deps.declarative_registry.get(skill_name)
+            if explicit_mode != "agent" and deps.declarative_registry
+            else None
+        )
 
         if not skill and not declarative:
             # 通用对话
-            model = deps.model_provider.get_model(body.model)
+            model = stream_deps.model_provider.get_model(body.model)
             async for chunk in model.astream(
                 [
                     SystemMessage(content="你是一个通用智能助手，尽力回答用户的问题。"),
                     HumanMessage(content=body.message),
                 ]
             ):
-                if chunk.content:
-                    yield _sse("delta", type="delta", content=chunk.content)
+                for event_type, content in _chunk_deltas(chunk):
+                    yield _sse(
+                        event_type,
+                        type=event_type,
+                        content=content,
+                    )
 
         elif declarative:
             # 声明式 Skill → 动态构建 Agent
-            from agent_platform.skills.builder import build_skill_agent, extract_complete_result
+            from agent_platform.skills.builder import (
+                build_skill_agent,
+                recursion_limit_for_tool_calls,
+            )
             from agent_platform.tools.registry import tool_map as get_tool_map
 
-            model = deps.model_provider.get_model(body.model)
+            model = stream_deps.model_provider.get_model(body.model)
             from agent_platform.config.settings import settings as _settings
             max_calls = _settings.declarative_skills_max_tool_calls
 
@@ -131,29 +168,48 @@ async def chat_stream(request: Request, body: ChatRequest) -> EventSourceRespons
 
             from uuid import uuid4
 
-            invoke_cfg = {"configurable": {"thread_id": body.session_id or uuid4().hex}}
-            agent = build_skill_agent(model, declarative, tools, max_tool_calls=max_calls, session_id=body.session_id or "")
+            invoke_cfg = {
+                "configurable": {"thread_id": body.session_id or uuid4().hex},
+                "recursion_limit": recursion_limit_for_tool_calls(max_calls),
+            }
+            agent = build_skill_agent(
+                model, declarative, tools, max_tool_calls=max_calls, session_id=body.session_id or ""
+            )
 
-            async for event in agent.astream_events(
-                {"messages": [HumanMessage(content=body.message)]},
-                version="v2",
-                config=invoke_cfg,
-            ):
-                if (
-                    event["event"] == "on_chat_model_stream"
-                    and event["data"]["chunk"].content
+            try:
+                async for event in agent.astream_events(
+                    {"messages": [HumanMessage(content=body.message)]},
+                    version="v2",
+                    config=invoke_cfg,
                 ):
-                    yield _sse(
-                        "delta",
-                        type="delta",
-                        content=event["data"]["chunk"].content,
-                    )
+                    if event["event"] == "on_chat_model_stream":
+                        for event_type, content in _chunk_deltas(event["data"]["chunk"]):
+                            yield _sse(
+                                event_type,
+                                type=event_type,
+                                content=content,
+                            )
+                    else:
+                        tool_event = _tool_event_data(event)
+                        if tool_event:
+                            event_type, data = tool_event
+                            yield _sse(event_type, **data)
+                        elif event["event"] == "on_chat_model_end":
+                            yield _sse("model_end", **_model_end_data(event))
+            except Exception as exc:
+                logger.exception("声明式 Skill '%s' 流式执行失败", declarative.name)
+                yield _sse(
+                    "error",
+                    type="error",
+                    error=f"{type(exc).__name__}: {exc}",
+                )
+                return
 
         else:
             # 使用 Python Agent
             skills = deps.skill_registry.get_all_skills()
-            agent = skill.compose(skills, deps.model_provider) or skill.create_agent(
-                deps.model_provider, checkpointer=deps.checkpointer
+            agent = skill.compose(skills, stream_deps.model_provider) or skill.create_agent(
+                stream_deps.model_provider, checkpointer=deps.checkpointer
             )
             query = decision.rewritten_query if decision else body.message
 
@@ -166,15 +222,20 @@ async def chat_stream(request: Request, body: ChatRequest) -> EventSourceRespons
                 version="v2",
                 config=invoke_cfg,
             ):
-                if (
-                    event["event"] == "on_chat_model_stream"
-                    and event["data"]["chunk"].content
-                ):
-                    yield _sse(
-                        "delta",
-                        type="delta",
-                        content=event["data"]["chunk"].content,
-                    )
+                if event["event"] == "on_chat_model_stream":
+                    for event_type, content in _chunk_deltas(event["data"]["chunk"]):
+                        yield _sse(
+                            event_type,
+                            type=event_type,
+                            content=content,
+                        )
+                else:
+                    tool_event = _tool_event_data(event)
+                    if tool_event:
+                        event_type, data = tool_event
+                        yield _sse(event_type, **data)
+                    elif event["event"] == "on_chat_model_end":
+                        yield _sse("model_end", **_model_end_data(event))
 
         yield _sse("done", type="done", skill=skill_name)
 
@@ -182,6 +243,97 @@ async def chat_stream(request: Request, body: ChatRequest) -> EventSourceRespons
 
 
 # ── SSE 辅助 ────────────────────────────────────────────────────
+
+
+def _chunk_deltas(chunk: Any) -> Iterator[tuple[str, str]]:
+    """将 LangChain 消息块拆分为思考和最终回答 SSE 增量。"""
+    for block in chunk.content_blocks:
+        block_type = block.get("type")
+        if block_type == "reasoning":
+            reasoning = block.get("reasoning")
+            if isinstance(reasoning, str) and reasoning:
+                yield "thinking_delta", reasoning
+        elif block_type == "text":
+            text = block.get("text")
+            if isinstance(text, str) and text:
+                yield "delta", text
+
+
+def _compact_tool_value(value: Any, *, depth: int = 0) -> Any:
+    """压缩工具事件数据，避免大段 write_file 内容占满 SSE/终端。"""
+    if depth >= 4:
+        return "<max depth>"
+    if isinstance(value, str):
+        if len(value) <= 500:
+            return value
+        return f"{value[:300]}… <{len(value)} chars>"
+    if isinstance(value, Mapping):
+        items = list(value.items())
+        compact = {
+            str(key): _compact_tool_value(item, depth=depth + 1)
+            for key, item in items[:30]
+        }
+        if len(items) > 30:
+            compact["<omitted>"] = f"{len(items) - 30} fields"
+        return compact
+    if isinstance(value, (list, tuple)):
+        compact = [_compact_tool_value(item, depth=depth + 1) for item in value[:20]]
+        if len(value) > 20:
+            compact.append(f"<{len(value) - 20} items omitted>")
+        return compact
+    if hasattr(value, "content"):
+        return _compact_tool_value(getattr(value, "content"), depth=depth + 1)
+    if value is None or isinstance(value, (bool, int, float)):
+        return value
+    return _compact_tool_value(str(value), depth=depth + 1)
+
+
+def _tool_preview(value: Any) -> str:
+    compact = _compact_tool_value(value)
+    if isinstance(compact, str):
+        return compact
+    return json.dumps(compact, ensure_ascii=False, default=str)
+
+
+def _tool_event_data(event: Mapping[str, Any]) -> tuple[str, dict[str, Any]] | None:
+    """把 LangChain 工具事件转换成可供 CLI 展示的 SSE 数据。"""
+    event_name = event.get("event")
+    tool_name = str(event.get("name") or "unknown")
+    data = event.get("data") or {}
+    if event_name == "on_tool_start":
+        return "tool_start", {
+            "type": "tool_start",
+            "tool": tool_name,
+            "input": _tool_preview(data.get("input")),
+        }
+    if event_name == "on_tool_end":
+        return "tool_end", {
+            "type": "tool_end",
+            "tool": tool_name,
+            "output": _tool_preview(data.get("output")),
+        }
+    if event_name == "on_tool_error":
+        return "tool_error", {
+            "type": "tool_error",
+            "tool": tool_name,
+            "error": _tool_preview(data.get("error")),
+        }
+    return None
+
+
+def _model_end_data(event: Mapping[str, Any]) -> dict[str, Any]:
+    """提取模型轮次终止原因，供 --thinking 模式诊断提前结束。"""
+    data = event.get("data") or {}
+    output = data.get("output")
+    metadata = getattr(output, "response_metadata", {}) or {}
+    tool_calls = getattr(output, "tool_calls", []) or []
+    invalid_tool_calls = getattr(output, "invalid_tool_calls", []) or []
+    return {
+        "type": "model_end",
+        "finish_reason": metadata.get("finish_reason", "unknown"),
+        "tool_calls": len(tool_calls),
+        "invalid_tool_calls": len(invalid_tool_calls),
+    }
 
 
 def _sse(event: str, **data) -> dict:

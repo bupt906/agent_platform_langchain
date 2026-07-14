@@ -5,10 +5,11 @@ from pydantic import BaseModel
 
 class ChatRequest(BaseModel):
     message: str
-    agent: str | None = None   # 显式指定 Python Agent（agents/ 目录下）
-    skill: str | None = None   # 显式指定声明式 Skill（skills/ 目录下）
+    agent: str | None = None  # 显式指定 Python Agent（agents/ 目录下）
+    skill: str | None = None  # 显式指定声明式 Skill（skills/ 目录下）
     model: str | None = None
     session_id: str | None = None
+    thinking: bool = False  # 是否启用并流式返回模型思考内容
 
 
 class ChatResponse(BaseModel):

@@ -317,7 +317,11 @@ async def _execute_declarative_skill(
     skill, message: str, deps: PlatformDeps, model_id: str | None, invoke_cfg: dict
 ) -> tuple[str, dict]:
     """执行声明式 Skill。"""
-    from agent_platform.skills.builder import build_skill_agent, extract_complete_result
+    from agent_platform.skills.builder import (
+        build_skill_agent,
+        extract_complete_result,
+        recursion_limit_for_tool_calls,
+    )
     from agent_platform.tools.registry import tool_map
 
     model = deps.model_provider.get_model(model_id)
@@ -336,9 +340,13 @@ async def _execute_declarative_skill(
 
     agent = build_skill_agent(model, skill, tools, max_tool_calls=max_calls, session_id=session_id)
 
+    skill_invoke_cfg = {
+        **(invoke_cfg or {}),
+        "recursion_limit": recursion_limit_for_tool_calls(max_calls),
+    }
     result = await agent.ainvoke(
         {"messages": [HumanMessage(content=message)]},
-        config=invoke_cfg or {},
+        config=skill_invoke_cfg,
     )
 
     complete_data = extract_complete_result(result["messages"])

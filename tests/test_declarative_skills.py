@@ -133,6 +133,12 @@ class TestDeclarativeSkillRegistry:
 
 
 class TestSkillAgentBuilder:
+    def test_recursion_limit_covers_tool_call_budget(self):
+        from agent_platform.skills.builder import recursion_limit_for_tool_calls
+
+        assert recursion_limit_for_tool_calls(10) == 25
+        assert recursion_limit_for_tool_calls(200) == 405
+
     def test_build_prompt_includes_body(self, skills_dir):
         from agent_platform.skills.registry import DeclarativeSkillRegistry
         from agent_platform.skills.builder import _build_prompt
@@ -156,7 +162,6 @@ class TestSkillAgentBuilder:
         """验证 Agent 可以被构建和编译。"""
         from agent_platform.skills.registry import DeclarativeSkillRegistry
         from agent_platform.skills.builder import build_skill_agent
-        from agent_platform.skills.complete import get_complete_tool
 
         reg = DeclarativeSkillRegistry(skills_dir)
         skill = reg.get("ppt")
@@ -223,6 +228,136 @@ class TestPythonExec:
         data = json.loads(result)
         assert data["success"] is False
         assert "Timeout" in data.get("error", "")
+
+# TODO(Zeyu) 1.应该把所有tool的测试都写在这里 
+# TODO(Zeyu) 2.所有工具的tool.func()应该改成tool.invoke()
+class TestFileTools:
+    def test_read_relative_text_file(self, tmp_path, monkeypatch):
+        import json
+
+        from agent_platform.config.settings import settings
+        from agent_platform.tools.file_tools import read_file
+
+        source = tmp_path / "sample.txt"
+        source.write_text("泵体振动异常", encoding="utf-8")
+        monkeypatch.chdir(tmp_path)
+        monkeypatch.setattr(settings, "file_read_allowed_roots", ".")
+
+        result = json.loads(read_file.func("sample.txt"))
+
+        assert result["success"] is True
+        assert result["content"] == "泵体振动异常"
+        assert result["truncated"] is False
+
+    def test_read_file_supports_pagination(self, tmp_path, monkeypatch):
+        import json
+
+        from agent_platform.config.settings import settings
+        from agent_platform.tools.file_tools import read_file
+
+        source = tmp_path / "sample.txt"
+        source.write_text("abcdefghij", encoding="utf-8")
+        monkeypatch.setattr(settings, "file_read_allowed_roots", str(tmp_path))
+
+        first = json.loads(read_file.func(str(source), offset=0, limit=4))
+        second = json.loads(read_file.func(str(source), offset=first["next_offset"], limit=4))
+
+        assert first["content"] == "abcd"
+        assert first["truncated"] is True
+        assert first["next_offset"] == 4
+        assert second["content"] == "efgh"
+
+    def test_read_file_rejects_path_outside_allowed_roots(self, tmp_path, monkeypatch):
+        import json
+
+        from agent_platform.config.settings import settings
+        from agent_platform.tools.file_tools import read_file
+
+        allowed = tmp_path / "allowed"
+        allowed.mkdir()
+        outside = tmp_path / "outside.txt"
+        outside.write_text("secret", encoding="utf-8")
+        monkeypatch.setattr(settings, "file_read_allowed_roots", str(allowed))
+
+        result = json.loads(read_file.func(str(outside)))
+
+        assert result["success"] is False
+        assert "PermissionError" in result["error"]
+
+    def test_read_file_rejects_unsupported_type(self, tmp_path, monkeypatch):
+        import json
+
+        from agent_platform.config.settings import settings
+        from agent_platform.tools.file_tools import read_file
+
+        source = tmp_path / "sample.bin"
+        source.write_bytes(b"binary")
+        monkeypatch.setattr(settings, "file_read_allowed_roots", str(tmp_path))
+
+        result = json.loads(read_file.func(str(source)))
+
+        assert result["success"] is False
+        assert "不支持的文件类型" in result["error"]
+
+    def test_write_file_creates_parent_directories(self, tmp_path, monkeypatch):
+        import json
+
+        from agent_platform.config.settings import settings
+        from agent_platform.tools.file_tools import write_file
+
+        monkeypatch.setattr(settings, "file_write_allowed_roots", str(tmp_path))
+        target = tmp_path / "kg_output" / "graph.json"
+
+        result = json.loads(write_file.func(str(target), '{"nodes": []}'))
+
+        assert result["success"] is True
+        assert result["overwritten"] is False
+        assert target.read_text(encoding="utf-8") == '{"nodes": []}'
+
+    def test_write_file_requires_explicit_overwrite(self, tmp_path, monkeypatch):
+        import json
+
+        from agent_platform.config.settings import settings
+        from agent_platform.tools.file_tools import write_file
+
+        target = tmp_path / "graph.json"
+        target.write_text("old", encoding="utf-8")
+        monkeypatch.setattr(settings, "file_write_allowed_roots", str(tmp_path))
+
+        rejected = json.loads(write_file.func(str(target), "new"))
+        written = json.loads(write_file.func(str(target), "new", overwrite=True))
+
+        assert rejected["success"] is False
+        assert "FileExistsError" in rejected["error"]
+        assert written["success"] is True
+        assert written["overwritten"] is True
+        assert target.read_text(encoding="utf-8") == "new"
+
+    def test_write_file_rejects_path_outside_allowed_roots(self, tmp_path, monkeypatch):
+        import json
+
+        from agent_platform.config.settings import settings
+        from agent_platform.tools.file_tools import write_file
+
+        allowed = tmp_path / "allowed"
+        allowed.mkdir()
+        outside = tmp_path / "outside.txt"
+        monkeypatch.setattr(settings, "file_write_allowed_roots", str(allowed))
+
+        result = json.loads(write_file.func(str(outside), "secret"))
+
+        assert result["success"] is False
+        assert "PermissionError" in result["error"]
+        assert not outside.exists()
+
+    def test_file_tools_are_registered(self):
+        from agent_platform.tools import register_all_declarative_tools
+        from agent_platform.tools.registry import tool_map
+
+        register_all_declarative_tools()
+
+        assert "read_file" in tool_map()
+        assert "write_file" in tool_map()
 
 
 class TestDataStore:
