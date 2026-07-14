@@ -2,9 +2,10 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from typing import overload
+from copy import copy
 
 from langchain_core.language_models import BaseChatModel
+from langchain_deepseek import ChatDeepSeek
 from langchain_openai import ChatOpenAI
 from openai import AsyncOpenAI
 
@@ -18,7 +19,8 @@ class ModelProvider:
 
     def __init__(self, settings: Settings) -> None:
         self._settings = settings
-        self._cache: dict[str, BaseChatModel] = {}
+        self._cache: dict[tuple[str, bool], BaseChatModel] = {}
+        self._thinking = False
 
     @property
     def timeout(self) -> int:
@@ -28,13 +30,31 @@ class ModelProvider:
     def max_retries(self) -> int:
         return self._settings.max_retries
 
+    def with_thinking(self, enabled: bool = True) -> ModelProvider:
+        """返回共享缓存的请求级视图，不改变全局 provider 的默认行为。"""
+        if enabled == self._thinking:
+            return self
+
+        provider = copy(self)
+        provider._thinking = enabled
+        return provider
+
     def get_model(self, model_id: str | None = None) -> BaseChatModel:
         model_id = model_id or self._settings.default_model
-        if model_id not in self._cache:
-            self._cache[model_id] = self._build_model(model_id)
-        return self._cache[model_id]
+        cache_key = (model_id, self._thinking)
+        if cache_key not in self._cache:
+            self._cache[cache_key] = self._build_model(
+                model_id,
+                thinking=self._thinking,
+            )
+        return self._cache[cache_key]
 
-    def _build_model(self, model_id: str) -> BaseChatModel:
+    def _build_model(
+        self,
+        model_id: str,
+        *,
+        thinking: bool = False,
+    ) -> BaseChatModel:
         opts = {
             "timeout": float(self.timeout),
             "max_retries": self.max_retries,
@@ -47,6 +67,15 @@ class ModelProvider:
         cfg = self._settings.models
 
         if provider == "deepseek":
+            if thinking:
+                return ChatDeepSeek(
+                    model=model_name,
+                    api_key=cfg.deepseek_api_key,
+                    base_url=cfg.deepseek_base_url,
+                    reasoning_effort="high",
+                    extra_body={"thinking": {"type": "enabled"}},
+                    **opts,
+                )
             return ChatOpenAI(
                 model=model_name,
                 api_key=cfg.deepseek_api_key,
@@ -76,9 +105,7 @@ class ModelProvider:
             )
         return ChatOpenAI(model=model_name, **opts)
 
-    def get_fallback_model(
-        self, model_ids: list[str] | None = None
-    ) -> BaseChatModel:
+    def get_fallback_model(self, model_ids: list[str] | None = None) -> BaseChatModel:
         """返回带 fallback 链的模型：主模型不可用时自动切换至备用模型。"""
         model_ids = model_ids or [self._settings.default_model, "openai:gpt-4o"]
         models = [self.get_model(mid) for mid in model_ids]

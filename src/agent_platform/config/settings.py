@@ -69,6 +69,16 @@ class Settings(BaseSettings):
     declarative_skills_enabled: bool = True  # 是否启用声明式 Skill 系统
     declarative_skills_max_tool_calls: int = 10  # Skill 执行的工具调用上限
     python_sandbox_timeout: int = 30  # execute_python 超时秒数
+    file_read_allowed_roots: str = "."  # 逗号分隔的允许读取目录
+    file_read_max_chars: int = 50_000  # read_file 单次最多返回字符数
+    file_read_max_bytes: int = 10 * 1024 * 1024  # read_file 可读取的最大文件大小(10mb)
+    file_write_allowed_roots: str = "."  # 逗号分隔的允许写入目录
+    file_write_max_bytes: int = 10 * 1024 * 1024  # write_file 单次最大写入大小(10mb)
+    bash_allowed_roots: str = "."  # bash 工具允许访问的目录
+    bash_allowed_commands: str = "python,python3,pytest,ruff,ls,find,mkdir"  # 允许执行的命令名
+    bash_default_timeout_seconds: int = 120
+    bash_max_timeout_seconds: int = 300
+    bash_max_output_chars: int = 15_000
 
     # ── Human-in-the-loop ──
     hitl_enabled: bool = True  # 全局启用/禁用 HITL

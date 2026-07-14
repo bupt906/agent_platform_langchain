@@ -1,0 +1,23 @@
+{
+  "schema_version": "1.0",
+  "domain": "general (adapt to the actual corpus before extracting)",
+  "_note": "A neutral starting point. Delete types that don't appear in the documents, and add domain-specific ones. Do NOT extract against this verbatim — a schema that doesn't match the corpus produces a graph that doesn't either.",
+  "entity_types": [
+    { "type": "Person", "description": "A named individual human." },
+    { "type": "Organization", "description": "A company, agency, institution, or formal group." },
+    { "type": "Location", "description": "A place: city, country, region, address, or facility." },
+    { "type": "Product", "description": "A named product, service, system, or work." },
+    { "type": "Event", "description": "A discrete happening with a name or clear identity (deal, launch, incident)." },
+    { "type": "Concept", "description": "A defined idea, method, or topic that is a subject of discussion." }
+  ],
+  "relationship_types": [
+    { "type": "employed_by", "description": "Person works or worked for the organization.", "source_types": ["Person"], "target_types": ["Organization"], "symmetric": false },
+    { "type": "located_in", "description": "Entity is situated in a place.", "source_types": ["Person", "Organization", "Event"], "target_types": ["Location"], "symmetric": false },
+    { "type": "part_of", "description": "Source is a component or member of target.", "source_types": ["Organization", "Product", "Concept"], "target_types": ["Organization", "Product", "Concept"], "symmetric": false },
+    { "type": "acquired", "description": "Source acquired target.", "source_types": ["Organization"], "target_types": ["Organization", "Product"], "symmetric": false },
+    { "type": "partnered_with", "description": "Two organizations in a stated partnership.", "source_types": ["Organization"], "target_types": ["Organization"], "symmetric": true },
+    { "type": "produced", "description": "Organization or person created the product/work.", "source_types": ["Organization", "Person"], "target_types": ["Product"], "symmetric": false },
+    { "type": "participated_in", "description": "Entity took part in the event.", "source_types": ["Person", "Organization"], "target_types": ["Event"], "symmetric": false },
+    { "type": "related_to", "description": "Last-resort generic link; FLAG for review and replace with a specific type whenever possible.", "source_types": [], "target_types": [], "symmetric": true }
+  ]
+}

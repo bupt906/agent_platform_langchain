@@ -173,6 +173,13 @@ curl -N -X POST http://localhost:8000/chat/stream \
   -H "Content-Type: application/json" \
   -d '{"message": "帮我审查这份合同"}'
 
+# Python CLI（连续输出回复内容，不显示 SSE 帧换行）
+agent-chat "帮我审查这份合同"
+
+# CLI 同样支持指定 Agent、Skill、模型和会话
+agent-chat --agent data_query --session-id demo "上个月销售额是多少？"
+agent-chat --skill ppt --model deepseek:deepseek-chat "做一个公司介绍PPT"
+
 # 查看所有 Agent 列表
 curl http://localhost:8000/skills
 

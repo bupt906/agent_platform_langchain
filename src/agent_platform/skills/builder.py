@@ -49,6 +49,15 @@ def build_skill_agent(
     return create_agent(model, all_tools, system_prompt=prompt)
 
 
+def recursion_limit_for_tool_calls(max_tool_calls: int) -> int:
+    """Return enough LangGraph supersteps for the configured tool-call budget.
+
+    A ReAct cycle normally consumes one agent step and one tool step.  Keep a
+    few extra steps for the initial model call and the final complete tool.
+    """
+    return max(25, max_tool_calls * 2 + 5)
+
+
 def _build_prompt(skill: DeclarativeSkill, max_tool_calls: int) -> str:
     body = skill.body
     if "{max_tool_calls}" in body:
