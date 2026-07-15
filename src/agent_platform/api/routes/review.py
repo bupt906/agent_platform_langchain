@@ -145,10 +145,6 @@ def _callback_headers() -> dict:
     return {}
 
 
-def _callback_url(deps: PlatformDeps, path: str) -> str | None:
+def _callback_url(deps: PlatformDeps, path: str) -> str:
     from agent_platform.config.settings import settings
-    base = settings.callback_base_url
-    if not base:
-        logger.debug("callback_base_url 未配置，跳过回调: %s", path)
-        return None
-    return f"{base}{path}"
+    return f"{settings.callback_base_url}{path}"

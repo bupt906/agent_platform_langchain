@@ -87,7 +87,7 @@ class Settings(BaseSettings):
     hitl_auto_approve_low_risk: bool = False  # 自动批准低风险操作
 
     # ── 审阅回调 ──
-    callback_base_url: str = ""  # 审阅结果回调地址，如 http://192.168.22.183:28080
+    callback_base_url: str = "http://192.168.22.183:28080"  # 审阅结果回调地址
     callback_auth_token: str = ""  # 回调时携带的 X-Auth-Token
 
     # ── 向量 RAG ──
