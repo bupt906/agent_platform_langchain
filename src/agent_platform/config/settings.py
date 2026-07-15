@@ -62,9 +62,6 @@ class Settings(BaseSettings):
     tool_budget_max_calls: int = 50  # 单次对话最大工具调用次数
     mcp_dynamic_reload: bool = True  # 运行时重载 MCP 工具
 
-    # ── Callback ──
-    callback_base_url: str = ""  # 外部 callback 服务地址（空=使用内置 callback 端点）
-
     # ── 声明式 Skills ──
     declarative_skills_enabled: bool = True  # 是否启用声明式 Skill 系统
     declarative_skills_max_tool_calls: int = 10  # Skill 执行的工具调用上限
