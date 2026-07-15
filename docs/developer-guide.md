@@ -87,7 +87,7 @@ tools: [read_file, write_file, bash]   # 声明需要的工具
 - `name`：英文，短横线分隔，用作 `skill` 参数值
 - `description`：一句英文描述，LLM 路由器根据这个判断用户意图是否匹配
 - `tools`：从全局工具池中选，填工具名即可。当前可用：`execute_python`、`bash`、`read_file`、`write_file`
-- 正文：就是 Agent 的 system prompt，写清楚工作流程、输出格式、注意事项
+- 正文：Agent关于这个SKILL该做的事
 
 ### ② assets/ — 示例和模板
 
@@ -96,8 +96,15 @@ Agent 执行时可以读取这些文件，作为输出格式的参考：
 ```json
 // example_schema.json
 {
-  "entity_types": [{ "name": "设备", "description": "..." }],
-  "relationship_types": [{ "name": "has_symptom", "from": "设备", "to": "故障现象" }]
+  "schema_version": "1.0",
+  "domain": "general (adapt to the actual corpus before extracting)",
+  "_note": "A neutral starting point. Delete types that don't appear in the documents, and add domain-specific ones. Do NOT extract against this verbatim — a schema that doesn't match the corpus produces a graph that doesn't either.",
+  "entity_types": [
+    { "type": "Person", "description": "A named individual human." }
+  ],
+  "relationship_types": [
+    { "type": "employed_by", "description": "Person works or worked for the organization.", "source_types": ["Person"], "target_types": ["Organization"], "symmetric": false }
+  ]
 }
 ```
 
@@ -105,8 +112,7 @@ Agent 执行时可以读取这些文件，作为输出格式的参考：
 
 `references/` 下的 `.md` 文件会在 Agent 构建时被**自动注入 prompt**（见 `builder.py` 的 `_build_prompt()` 函数）。放：
 
-- 领域规范（如本例的实体抽取规范、Schema 设计指南）
-- 输出格式模板
+- 详细的实践内容（如本例的实体抽取规范、Schema 设计指南）
 - 常见错误和最佳实践
 
 Agent 执行时这些内容直接在 system prompt 里，不需要再调工具查。
