@@ -20,22 +20,55 @@ _SENTENCE_SPLIT_RE = re.compile(
 
 
 def parse_document(file_path: str) -> str:
-    """根据文件扩展名解析文档，返回全文文本。
+    """根据文件路径或 URL 解析文档，返回全文文本。
 
     支持格式：txt、md、docx
+    支持来源：本地文件路径、HTTP/HTTPS URL
     """
+    if file_path.startswith(("http://", "https://")):
+        return _parse_from_url(file_path)
+
     path = Path(file_path)
     if not path.exists():
         raise FileNotFoundError(f"文件不存在: {file_path}")
 
     suffix = path.suffix.lower()
-
     if suffix in (".txt", ".md", ".markdown"):
         return _parse_text(path)
     elif suffix == ".docx":
         return _parse_docx(path)
+    elif suffix == ".doc":
+        return _parse_doc(path)
     else:
-        raise ValueError(f"不支持的文件格式: {suffix}，支持 txt / md / docx")
+        raise ValueError(f"不支持的文件格式: {suffix}，支持 txt / md / docx / doc")
+
+
+def _parse_from_url(url: str) -> str:
+    """从 HTTP URL 下载文档并解析。"""
+    import tempfile
+    import urllib.request
+    from urllib.parse import urlparse
+
+    parsed = urlparse(url)
+    suffix = Path(parsed.path).suffix.lower()
+
+    with tempfile.NamedTemporaryFile(suffix=suffix, delete=False) as tmp:
+        urllib.request.urlretrieve(url, tmp.name)
+        tmp_path = Path(tmp.name)
+
+    try:
+        if suffix in (".txt", ".md", ".markdown"):
+            return tmp_path.read_text(encoding="utf-8")
+        elif suffix == ".docx":
+            from docx import Document
+            doc = Document(str(tmp_path))
+            return "\n".join(p.text for p in doc.paragraphs if p.text.strip())
+        elif suffix == ".doc":
+            return _parse_doc(tmp_path)
+        else:
+            raise ValueError(f"不支持的 URL 文件格式: {suffix}")
+    finally:
+        tmp_path.unlink(missing_ok=True)
 
 
 def _parse_text(path: Path) -> str:
@@ -51,6 +84,28 @@ def _parse_docx(path: Path) -> str:
         return "\n".join(paragraphs)
     except ImportError:
         raise ImportError("python-docx 未安装，无法解析 docx 文件。请运行: pip install python-docx")
+
+
+def _parse_doc(path: Path) -> str:
+    """解析 .doc 文件（旧版 Word 格式），优先用 textutil(macOS)/antiword，回退到 python-docx 尝试。"""
+    try:
+        from docx import Document
+        doc = Document(str(path))
+        paragraphs = [p.text for p in doc.paragraphs if p.text.strip()]
+        return "\n".join(paragraphs)
+    except Exception:
+        pass
+
+    import subprocess
+    for cmd in (["textutil", "-convert", "txt", "-stdout", str(path)], ["antiword", str(path)]):
+        try:
+            result = subprocess.run(cmd, capture_output=True, text=True, timeout=30)
+            if result.returncode == 0 and result.stdout.strip():
+                return result.stdout.strip()
+        except (FileNotFoundError, subprocess.TimeoutExpired):
+            continue
+
+    raise ValueError(f"无法解析 .doc 文件: {path}。请转换为 .docx 或 .txt 格式")
 
 
 def split_sentences(text: str) -> list[str]:
