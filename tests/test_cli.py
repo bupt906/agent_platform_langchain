@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from io import StringIO
 
-from agent_platform import cli
+from agent_platform.tools import cli
 from agent_platform.config.settings import settings
 
 

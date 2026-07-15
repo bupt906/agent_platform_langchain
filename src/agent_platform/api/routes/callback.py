@@ -24,8 +24,8 @@ async def update_task_status(request: Request, body: TaskStatusRequest) -> Callb
 
     status: "1"=审阅中 "2"=审阅完毕 "3"=失败
     """
-    _task_statuses[body.task_id] = body.status
-    logger.info("任务状态更新: task_id=%d status=%s", body.task_id, body.status)
+    _task_statuses[body.taskId] = body.status
+    logger.info("任务状态更新: taskId=%d status=%s", body.taskId, body.status)
     return CallbackResponse(code=200, msg="操作成功", data=True)
 
 

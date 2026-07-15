@@ -102,7 +102,7 @@ async def list_knowledge_bases(request: Request) -> dict:
 
 async def _notify_task_status(deps: PlatformDeps, task_id: int, status: str) -> None:
     try:
-        payload = {"task_id": task_id, "status": status}
+        payload = {"taskId": task_id, "status": status}
         url = _callback_url(deps, "/api/callback/task/status")
         if url:
             headers = _callback_headers()
