@@ -27,6 +27,9 @@ dependencies = [
     "sse-starlette>=2.0.0",
 ]
 
+[project.scripts]
+agent-chat = "agent_platform.cli:main"
+
 [project.optional-dependencies]
 dev = [
     "pytest>=8.0",
