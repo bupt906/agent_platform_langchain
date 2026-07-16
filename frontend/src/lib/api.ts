@@ -58,8 +58,8 @@ export const api = {
     return get<{ records: AuditRecord[]; total: number }>(`/audit?${q}`);
   },
   getReviewResults: (taskId: number) =>
-    get<{ data: { results: ReviewResult[]; total: number } }>(`/api/callback/batch/${taskId}`),
+    get<{ data: { task_id: number; results: ReviewResult[]; total: number } }>(`/api/callback/batch/${taskId}`),
   getTaskStatus: (taskId: number) =>
-    get<{ data: { task_id: number; status: string } }>(`/api/callback/task/status/${taskId}`),
+    get<{ data: { taskId: number; status: string } }>(`/api/callback/task/status/${taskId}`),
   getKBList: () => get<{ knowledge_bases: { id: string; name: string; entry_count: number }[]; total: number }>("/review/kbs"),
 };

@@ -46,7 +46,7 @@ async def get_task_status(request: Request, task_id: int) -> CallbackResponse:
     status = _task_statuses.get(task_id)
     if status is None:
         return CallbackResponse(code=404, msg="任务不存在", data=None)
-    return CallbackResponse(code=200, msg="操作成功", data={"task_id": task_id, "status": status})
+    return CallbackResponse(code=200, msg="操作成功", data={"taskId": task_id, "status": status})
 
 
 @router.get("/batch/{task_id}")
