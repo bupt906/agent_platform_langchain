@@ -69,13 +69,8 @@ agent_platform_langchain/
 │   ├── agents/                     # Agent 插件目录（自动发现）
 │   │   ├── base.py                 # Agent 基类 BaseSkill
 │   │   └── document_review/        # AI 文档审阅 Agent
-│   ├── knowledge_bases/            # 知识库目录（向量 RAG）
-│   │   ├── registry.py             #   KnowledgeBaseRegistry
-│   │   ├── vector_store.py         #   sqlite-vec 向量存储
-│   │   ├── compliance.md           #   合规性知识库
-│   │   ├── terminology.md          #   用词规范知识库
-│   │   ├── technical.md            #   专业技术知识库
-│   │   └── mining.md               #   矿山适配知识库
+│   │       └── knowledge_bases/    #   知识库（外部万悟平台）
+│   │           └── client.py       #     hit 检索接口客户端
 │   │
 │   ├── skills/                     # 声明式 Skill 目录（SKILL.md 定义）
 │   │   ├── registry.py              #   DeclarativeSkillRegistry
@@ -222,10 +217,12 @@ curl http://localhost:8000/hitl/approvals
 | `TOOL_TIMEOUT_SECONDS` | `30.0` | 单个工具调用超时秒数 |
 | `TOOL_RATE_LIMIT_PER_MINUTE` | `100` | 全局工具调用速率限制 |
 | `TOOL_BUDGET_MAX_CALLS` | `50` | 单次对话最大工具调用次数 |
-| `EMBEDDING_MODEL` | (空) | embedding 模型，格式 `provider:model`。DeepSeek 不支持 embedding，配此项可切换到 Qwen/OpenAI |
-| `EMBEDDING_DIMENSIONS` | `1536` | 向量维度 |
-| `KB_VECTOR_TOP_K` | `5` | 向量检索返回条数 |
-| `KB_VECTOR_THRESHOLD` | `0.7` | 余弦距离阈值 |
+| `KB_API_BASE_URL` | `http://localhost:8081` | 外部知识库平台（万悟）地址 |
+| `KB_API_KEY` | (空) | 知识库接口 Bearer API Key |
+| `KB_MATCH_TYPE` | `mix` | 检索模式：`vector` / `text` / `mix` |
+| `KB_RERANK_MODEL_ID` | (空) | 重排序模型 UUID（mix 模式可选） |
+| `KB_TOP_K` | `5` | 检索返回条数 |
+| `KB_THRESHOLD` | `0.4` | 相似度过滤阈值 |
 | `HITL_ENABLED` | `true` | 是否启用人机协同 |
 | `HITL_APPROVAL_TIMEOUT` | `300` | 审批超时秒数 |
 
@@ -408,7 +405,7 @@ data: {"type": "approval_result", "approval_id": "a1b2c3", "status": "approved"}
   "task_id": 1,
   "file_path": "/path/to/document.docx",
   "kb_type_code": "",
-  "kb_ids": ["compliance", "terminology"]
+  "kb_ids": ["2003716670903816192"]
 }
 ```
 
@@ -417,7 +414,7 @@ data: {"type": "approval_result", "approval_id": "a1b2c3", "status": "approved"}
 | `task_id` | int | 否 | 任务 ID，默认 0 |
 | `file_path` | string | 是 | 文件路径，支持 txt / md / docx |
 | `kb_type_code` | string | 否 | 知识库类型编码 |
-| `kb_ids` | string[] | 是 | 知识库 ID 列表 |
+| `kb_ids` | string[] | 是 | 外部知识库平台（万悟）的知识库 ID 列表 |
 
 **响应（ack）：**
 
@@ -427,16 +424,7 @@ data: {"type": "approval_result", "approval_id": "a1b2c3", "status": "approved"}
 
 审阅结果不在此返回，通过回调 `POST /api/callback/batch` 推送。
 
-### GET `/review/kbs` — 列出可用的审查知识库
-
-```json
-{
-  "knowledge_bases": [
-    {"name": "合规性知识库", "description": "...", "id": "compliance", "entry_count": 8}
-  ],
-  "total": 4
-}
-```
+逐句审阅时通过万悟平台 hit 接口（`POST {KB_API_BASE_URL}/service/api/openapi/v1/knowledge/hit`）检索知识库，检索参数由 `KB_*` 环境变量配置，详见 `docs/知识库接口文档.md`。
 
 ### Callback 接口
 
@@ -444,7 +432,7 @@ data: {"type": "approval_result", "approval_id": "a1b2c3", "status": "approved"}
 
 **任务状态** `PUT {base}/api/callback/task/status`
 ```json
-{"task_id": 1, "status": "1"}
+{"taskId": 1, "status": "1"}
 ```
 | status | 含义 |
 |--------|------|
@@ -465,8 +453,8 @@ data: {"type": "approval_result", "approval_id": "a1b2c3", "status": "approved"}
         "error_reason": "使用了绝对化用语",
         "suggestion": "改为'按照安全规程设计，风险可控'",
         "reference": {
-          "kb_id": "terminology",
-          "kb_file": "terminology.md",
+          "kb_id": "2003716670903816192",
+          "kb_file": "用词规范.docx",
           "content": "禁止使用'绝对安全'等用语"
         }
       },

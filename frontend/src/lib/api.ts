@@ -61,5 +61,4 @@ export const api = {
     get<{ data: { task_id: number; results: ReviewResult[]; total: number } }>(`/api/callback/batch/${taskId}`),
   getTaskStatus: (taskId: number) =>
     get<{ data: { taskId: number; status: string } }>(`/api/callback/task/status/${taskId}`),
-  getKBList: () => get<{ knowledge_bases: { id: string; name: string; entry_count: number }[]; total: number }>("/review/kbs"),
 };

@@ -1,6 +1,7 @@
 """文档审阅工具函数。
 
 提供文档解析、句子切分、知识库检索等核心能力。
+知识库检索通过外部万悟平台 hit 接口完成（见 knowledge_bases/client.py）。
 """
 
 from __future__ import annotations
@@ -10,7 +11,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
-    from agent_platform.knowledge_bases.registry import KnowledgeBaseRegistry
+    from agent_platform.agents.document_review.knowledge_bases.client import KnowledgeHitClient
 
 # ── 句子切分正则 ──────────────────────────────────────────
 
@@ -44,7 +45,8 @@ def parse_document(file_path: str) -> str:
 
 
 def _parse_from_url(url: str) -> str:
-    """从 HTTP URL 下载文档并解析。"""
+    """从 HTTP URL 下载文档并解析（带超时，避免慢速源挂死工作线程）。"""
+    import shutil
     import tempfile
     import urllib.request
     from urllib.parse import urlparse
@@ -53,7 +55,8 @@ def _parse_from_url(url: str) -> str:
     suffix = Path(parsed.path).suffix.lower()
 
     with tempfile.NamedTemporaryFile(suffix=suffix, delete=False) as tmp:
-        urllib.request.urlretrieve(url, tmp.name)
+        with urllib.request.urlopen(url, timeout=60) as resp:
+            shutil.copyfileobj(resp, tmp)
         tmp_path = Path(tmp.name)
 
     try:
@@ -135,32 +138,30 @@ def split_sentences(text: str) -> list[str]:
 async def search_knowledge_bases(
     kb_ids: list[str],
     sentence: str,
-    kb_registry: KnowledgeBaseRegistry,
-    top_k: int = 5,
-    threshold: float = 0.3,
+    kb_client: KnowledgeHitClient,
 ) -> list[dict]:
-    """向量语义检索：在指定知识库中查找与句子最相关的条文。
+    """调用外部知识库 hit 接口，查找与句子最相关的条文。
+
+    检索参数（matchType / topK / threshold 等）由 settings 统一配置，
+    失败重试由 client 内部处理，重试后仍失败则向上抛出异常。
 
     Args:
         kb_ids: 知识库 ID 列表
         sentence: 待审查句子
-        kb_registry: 知识库注册中心
-        top_k: 返回 top-k 结果
-        threshold: 相似度阈值
+        kb_client: 外部知识库客户端
 
     Returns:
-        [{"kb_id": "...", "kb_name": "...", "entry": {...}, "relevance": 0.8}, ...]
+        [{"kb_id": "...", "kb_file": "...", "content": "...", "relevance": 0.8}, ...]
     """
-    results = await kb_registry.search(kb_ids, sentence, top_k=top_k, threshold=threshold)
+    hits = await kb_client.hit(kb_ids, sentence)
     return [
         {
-            "kb_id": r.kb_id,
-            "kb_name": r.kb_name,
-            "kb_file": r.kb_file,
-            "entry": r.entry,
-            "relevance": round(r.relevance, 3),
+            "kb_id": h.kb_id,
+            "kb_file": h.kb_file,
+            "content": h.content,
+            "relevance": h.relevance,
         }
-        for r in results
+        for h in hits
     ]
 
 
@@ -171,20 +172,11 @@ def format_kb_results_for_prompt(results: list[dict]) -> str:
 
     parts = []
     for i, r in enumerate(results, 1):
-        entry = r["entry"]
-        kb_file = r.get("kb_file", "")
-        lines = [f"### 检索结果 {i}（知识库文件：{kb_file}，相关度：{r['relevance']}）"]
-        for k, v in entry.items():
-            if k != "原文":
-                lines.append(f"- {k}：{v}")
-        parts.append("\n".join(lines))
+        parts.append(
+            f"### 检索结果 {i}（知识库id：{r.get('kb_id', '')}，"
+            f"知识库文件：{r.get('kb_file', '')}，相关度：{r.get('relevance', 0)}）\n"
+            f"{r.get('content', '')}"
+        )
 
     return "\n\n".join(parts)
 
-
-def format_review_output(results: list[dict], summary: dict) -> dict:
-    """将审阅结果格式化为标准输出结构。"""
-    return {
-        "results": results,
-        "summary": summary,
-    }

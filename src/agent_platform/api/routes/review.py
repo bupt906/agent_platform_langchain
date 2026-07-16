@@ -29,14 +29,7 @@ async def review_document(request: Request, body: ReviewRequest) -> dict:
     if not body.kb_ids:
         raise HTTPException(status_code=400, detail="kb_ids 不能为空")
 
-    if deps.kb_registry:
-        available = [kb.kb_id for kb in deps.kb_registry.list_all()]
-        invalid = [k for k in body.kb_ids if k not in available]
-        if invalid:
-            raise HTTPException(
-                status_code=400,
-                detail=f"无效的知识库 ID: {invalid}。可用: {available}",
-            )
+    # kb_ids 为外部知识库平台的 ID，有效性由 hit 接口调用时校验
 
     # 通知审阅中
     await _notify_task_status(deps, body.task_id, "1")
@@ -85,18 +78,6 @@ async def review_document(request: Request, body: ReviewRequest) -> dict:
         raise HTTPException(status_code=500, detail=f"审阅失败: {e}")
 
 
-# ── 知识库列表 ────────────────────────────────────────────
-
-
-@router.get("/kbs")
-async def list_knowledge_bases(request: Request) -> dict:
-    deps = _get_deps(request)
-    if not deps.kb_registry:
-        return {"knowledge_bases": [], "total": 0}
-    infos = deps.kb_registry.list_infos()
-    return {"knowledge_bases": infos, "total": len(infos)}
-
-
 # ── 内部 helper ───────────────────────────────────────────
 
 
@@ -106,35 +87,35 @@ async def _notify_task_status(deps: PlatformDeps, task_id: int, status: str) -> 
         url = _callback_url(deps, "/api/callback/task/status")
         if url:
             headers = _callback_headers()
-            await deps.http_client.put(url, json=payload, headers=headers)
+            await deps.http_client.put(url, json=payload, headers=headers, timeout=30.0)
             logger.info("任务状态更新: task_id=%d status=%s", task_id, status)
     except Exception:
         logger.warning("任务状态回调失败", exc_info=True)
 
 
 async def _submit_review_results(deps: PlatformDeps, results: list[dict]) -> None:
+    """提交审阅结果到回调服务。失败时抛出异常，由调用方决定任务状态。"""
     if not results:
         return
-    try:
-        items = [
-            {
-                "task_id": r.get("task_id", 0),
-                "sentence_index": r.get("sentence_index", 0),
-                "reviewed_sentence": r.get("reviewed_sentence", ""),
-                "has_issue": r.get("has_issue", "否"),
-                "content": r.get("content", {}),
-                "error": r.get("error", False),
-            }
-            for r in results
-        ]
-        url = _callback_url(deps, "/api/callback/batch")
-        if url:
-            payload = {"results": items}
-            headers = _callback_headers()
-            await deps.http_client.post(url, json=payload, headers=headers)
-            logger.info("审阅结果回调: %d 条", len(items))
-    except Exception:
-        logger.warning("审阅结果回调失败", exc_info=True)
+    items = [
+        {
+            "task_id": r.get("task_id", 0),
+            "sentence_index": r.get("sentence_index", 0),
+            "reviewed_sentence": r.get("reviewed_sentence", ""),
+            "has_issue": r.get("has_issue", "否"),
+            "content": r.get("content", {}),
+            "error": r.get("error", False),
+        }
+        for r in results
+    ]
+    url = _callback_url(deps, "/api/callback/batch")
+    if not url:
+        return
+    payload = {"results": items}
+    headers = _callback_headers()
+    resp = await deps.http_client.post(url, json=payload, headers=headers, timeout=30.0)
+    resp.raise_for_status()
+    logger.info("审阅结果回调: %d 条", len(items))
 
 
 def _callback_headers() -> dict:
@@ -147,4 +128,7 @@ def _callback_headers() -> dict:
 
 def _callback_url(deps: PlatformDeps, path: str) -> str:
     from agent_platform.config.settings import settings
-    return f"{settings.callback_base_url}{path}"
+    base = settings.callback_base_url.strip()
+    if not base:
+        return ""  # 未配置回调地址 → 禁用回调
+    return f"{base}{path}"
