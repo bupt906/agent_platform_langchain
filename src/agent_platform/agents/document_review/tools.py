@@ -47,13 +47,15 @@ def _parse_from_url(url: str) -> str:
     """从 HTTP URL 下载文档并解析。"""
     import tempfile
     import urllib.request
-    from urllib.parse import urlparse
+    from urllib.parse import quote, urlparse, urlunparse
 
     parsed = urlparse(url)
     suffix = Path(parsed.path).suffix.lower()
+    # 对路径中的非 ASCII 字符做百分号编码，避免 urllib 抛出 ASCII 编码错误
+    encoded_url = urlunparse(parsed._replace(path=quote(parsed.path, safe='/:@')))
 
     with tempfile.NamedTemporaryFile(suffix=suffix, delete=False) as tmp:
-        urllib.request.urlretrieve(url, tmp.name)
+        urllib.request.urlretrieve(encoded_url, tmp.name)
         tmp_path = Path(tmp.name)
 
     try:
