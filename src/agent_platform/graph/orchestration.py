@@ -105,7 +105,12 @@ class OrchestrationEngine:
 
         try:
             while True:
-                event = await event_queue.get()
+                try:
+                    # 带超时的等待，防止 sentinel 未入队导致永久阻塞
+                    event = await asyncio.wait_for(event_queue.get(), timeout=300.0)
+                except asyncio.TimeoutError:
+                    logger.warning("编排流超时，强制终止")
+                    break
                 if event is _SENTINEL:
                     break
                 yield event

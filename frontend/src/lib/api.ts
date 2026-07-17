@@ -1,4 +1,5 @@
-const BASE = "";
+// 开发环境通过 Vite proxy 转发，生产环境需设置为实际后端地址
+const BASE = import.meta.env.VITE_API_BASE_URL || "";
 
 export interface SkillInfo {
   name: string;
@@ -44,10 +45,17 @@ export interface ReviewResult {
   content: Record<string, unknown>;
 }
 
+// 所有 fetch 请求默认超时 30 秒
 async function get<T>(url: string): Promise<T> {
-  const r = await fetch(`${BASE}${url}`);
-  if (!r.ok) throw new Error(`${r.status}`);
-  return r.json();
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), 30_000);
+  try {
+    const r = await fetch(`${BASE}${url}`, { signal: controller.signal });
+    if (!r.ok) throw new Error(`${r.status}`);
+    return r.json();
+  } finally {
+    clearTimeout(timeout);
+  }
 }
 
 export const api = {

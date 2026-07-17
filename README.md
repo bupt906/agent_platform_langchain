@@ -336,7 +336,7 @@ data: {"type": "approval_result", "approval_id": "a1b2c3", "status": "approved"}
   "skills": [
     {
       "name": "document_review",
-      "description": "通用知识问答，基于 RAG 检索知识库回答用户问题",
+      "description": "AI 文档审阅：按句子粒度审查文档，基于知识库标准判断合规性、用词规范、技术准确性和场景适配性",
       "examples": ["公司的请假制度是什么？", "项目的技术架构是怎样的？"],
       "dependencies": []
     },
@@ -344,7 +344,7 @@ data: {"type": "approval_result", "approval_id": "a1b2c3", "status": "approved"}
       "name": "knowledge-graph-extraction",
       "description": "结合数据查询和合同审查...",
       "examples": ["帮我审查这份采购合同，并验证金额是否与系统数据一致"],
-      "dependencies": ["document_review", "document_review"]
+      "dependencies": ["document_review", "data_query"]
     }
   ],
   "total": 4
@@ -784,7 +784,7 @@ results = await execute_tools_parallel(tool_calls, max_concurrency=5)
 |----------|--------|------|
 | `HITL_ENABLED` | `true` | 全局启用/禁用 HITL |
 | `HITL_APPROVAL_TIMEOUT` | `300` | 审批超时秒数 |
-| `HITL_SENSITIVE_SKILLS` | `["document_review", "document_review"]` | 需要审批的技能列表 |
+| `HITL_SENSITIVE_SKILLS` | `["document_review"]` | 需要审批的技能列表 |
 | `HITL_AUTO_APPROVE_LOW_RISK` | `false` | 是否自动批准低风险操作 |
 
 ### API

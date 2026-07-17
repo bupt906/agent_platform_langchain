@@ -17,6 +17,7 @@ export default function Sidebar() {
         <NavLink
           key={to}
           to={to}
+          end={to === "/"}
           className={({ isActive }) =>
             `p-2.5 rounded-lg transition-colors group relative ${
               isActive ? "bg-blue-50 text-blue-600" : "text-gray-400 hover:bg-gray-100 hover:text-gray-600"

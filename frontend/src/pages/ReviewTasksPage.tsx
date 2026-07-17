@@ -1,6 +1,6 @@
 import { useState } from "react";
 import { ChevronDown, ChevronRight, AlertTriangle, CheckCircle, XCircle, Clock } from "lucide-react";
-import type { ReviewResult } from "../lib/api";
+import { api, type ReviewResult } from "../lib/api";
 
 interface TaskSummary { task_id: number; status: string }
 
@@ -8,29 +8,39 @@ export default function ReviewTasksPage() {
   const [taskId, setTaskId] = useState("");
   const [tasks, setTasks] = useState<TaskSummary[]>([]);
   const [results, setResults] = useState<ReviewResult[]>([]);
+  const [resultsTaskId, setResultsTaskId] = useState<number | null>(null);
   const [expanded, setExpanded] = useState(false);
   const [loading, setLoading] = useState(false);
+  const [error, setError] = useState<string | null>(null);
 
   const loadResults = async (tid: number) => {
     setLoading(true);
+    setError(null);
+    setResults([]);
+    setResultsTaskId(tid);
     try {
-      const r = await fetch(`/api/callback/batch/${tid}`);
-      const data = await r.json();
+      const data = await api.getReviewResults(tid);
       setResults(data.data?.results || []);
       setExpanded(true);
-    } catch { setResults([]); }
+    } catch {
+      setError("加载审阅结果失败");
+      setResults([]);
+    }
     setLoading(false);
   };
 
-  // mock: list recent tasks (callback stores in-memory, would need API)
   const handleSearch = async () => {
     const tid = parseInt(taskId);
     if (isNaN(tid)) return;
-    const r = await fetch(`/api/callback/task/status/${tid}`);
-    const d = await r.json();
-    if (d.code === 200 && d.data) {
-      setTasks([{ task_id: tid, status: d.data.status }]);
+    setResults([]);
+    setExpanded(false);
+    setError(null);
+    try {
+      const data = await api.getTaskStatus(tid);
+      setTasks([{ task_id: tid, status: data.data?.status || "unknown" }]);
       loadResults(tid);
+    } catch {
+      setError("任务不存在或查询失败");
     }
   };
 
@@ -53,6 +63,8 @@ export default function ReviewTasksPage() {
         <button onClick={handleSearch} className="bg-blue-500 text-white px-4 py-2 rounded-lg text-sm hover:bg-blue-600">查询</button>
       </div>
 
+      {error && <div className="text-sm text-red-500">{error}</div>}
+
       {tasks.map(t => (
         <div key={t.task_id} className="bg-white rounded-xl border border-gray-200 p-4">
           <div className="flex items-center gap-3">
@@ -60,16 +72,16 @@ export default function ReviewTasksPage() {
             <span className="font-medium">任务 #{t.task_id}</span>
             <span className="text-sm text-gray-500">{statusText(t.status)}</span>
             <button onClick={() => loadResults(t.task_id)} className="ml-auto flex items-center gap-1 text-sm text-blue-500">
-              {expanded ? <ChevronDown size={14} /> : <ChevronRight size={14} />} 详情
+              {expanded && resultsTaskId === t.task_id ? <ChevronDown size={14} /> : <ChevronRight size={14} />} 详情
             </button>
           </div>
 
           {loading && <div className="text-sm text-gray-400 mt-2">加载中...</div>}
 
-          {expanded && results.length > 0 && (
+          {expanded && resultsTaskId === t.task_id && results.length > 0 && (
             <div className="mt-4 space-y-2 max-h-96 overflow-y-auto">
-              {results.map((r, i) => (
-                <div key={i} className={`p-3 rounded-lg text-sm ${r.has_issue === "是" ? "bg-red-50 border border-red-100" : "bg-green-50 border border-green-100"}`}>
+              {results.map((r) => (
+                <div key={r.sentence_index} className={`p-3 rounded-lg text-sm ${r.has_issue === "是" ? "bg-red-50 border border-red-100" : "bg-green-50 border border-green-100"}`}>
                   <div className="flex items-start gap-2">
                     {r.has_issue === "是" ? <AlertTriangle size={14} className="text-red-500 mt-0.5 shrink-0" /> : <CheckCircle size={14} className="text-green-500 mt-0.5 shrink-0" />}
                     <div>
@@ -88,7 +100,7 @@ export default function ReviewTasksPage() {
             </div>
           )}
 
-          {expanded && results.length === 0 && !loading && (
+          {expanded && resultsTaskId === t.task_id && results.length === 0 && !loading && (
             <div className="text-sm text-gray-400 mt-2">暂无审阅结果</div>
           )}
         </div>

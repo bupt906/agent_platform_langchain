@@ -7,7 +7,6 @@ from pathlib import Path
 
 from langchain_core.tools import tool
 
-
 TEXT_SUFFIXES = {
     ".txt",
     ".md",

@@ -9,9 +9,9 @@ import builtins
 import io
 import json
 import logging
-import os
 import tempfile
-from concurrent.futures import ThreadPoolExecutor, TimeoutError as FuturesTimeoutError
+from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import TimeoutError as FuturesTimeoutError
 from contextlib import redirect_stdout
 from pathlib import Path
 
@@ -31,7 +31,7 @@ SAFE_BUILTIN_NAMES = {
     "Exception", "ValueError", "TypeError", "KeyError", "IndexError",
     "StopIteration", "ZeroDivisionError", "AttributeError", "ImportError",
     "True", "False", "None",
-    "open",  # 允许文件写入（仅限 OUTPUT_DIR 内）
+    "open",  # 沙箱安全的 open（仅允许读写白名单目录内的文件）
 }
 
 _SAFE_BUILTINS = {k: getattr(builtins, k) for k in SAFE_BUILTIN_NAMES if hasattr(builtins, k)}
@@ -44,7 +44,6 @@ _ALLOWED_IMPORTS = {
     "openpyxl", "python-docx",
     "pptx", "pptx.util", "pptx.enum.text", "pptx.dml.color",
     "markdown",
-    "requests",
 }
 
 _ORIGINAL_IMPORT = builtins.__import__
@@ -59,22 +58,62 @@ def _safe_import(name, *args, **kwargs):
     raise ImportError(f"模块 '{name}' 不在沙箱白名单中。可用模块: {sorted(_ALLOWED_IMPORTS)}")
 
 
+def _path_is_under(path: Path, parent: Path) -> bool:
+    """检查 path 是否在 parent 目录下（含自身）。"""
+    try:
+        path.relative_to(parent)
+        return True
+    except ValueError:
+        return False
+
+
+def _is_standard_system_path(p: Path) -> bool:
+    """检查是否为标准系统路径（Python stdlib 等），允许沙箱读取。"""
+    standard_prefixes = [
+        Path("/usr/lib"),
+        Path("/usr/share"),
+        Path("/lib"),
+        Path("/Library/Frameworks/Python.framework"),
+        Path("/opt/homebrew"),
+    ]
+    return any(_path_is_under(p, prefix) for prefix in standard_prefixes)
+
+
 def _get_safe_globals(output_dir: str) -> dict:
     safe = dict(_SAFE_BUILTINS)
 
-    # 安全的 open：只允许在 OUTPUT_DIR 内写入
+    # 读取配置的允许目录
+    try:
+        from agent_platform.config.settings import settings
+        read_roots = [p.strip() for p in settings.file_read_allowed_roots.split(",") if p.strip()]
+        write_roots = [p.strip() for p in settings.file_write_allowed_roots.split(",") if p.strip()]
+    except Exception:
+        read_roots = ["."]
+        write_roots = ["."]
+
+    # 安全的 open：限制读写目录
     def _sandbox_open(file, mode="r", *args, **kwargs):
         file_str = str(file)
-        # 允许只读打开任意文件；写入必须落在 output_dir 内
+        p = Path(file_str)
+        if not p.is_absolute():
+            p = Path(output_dir) / p
+        p = p.resolve()
+
         if "w" in mode or "a" in mode or "x" in mode:
-            p = Path(file_str)
-            if not p.is_absolute():
-                p = Path(output_dir) / p
-            else:
-                raise PermissionError(f"沙箱禁止使用绝对路径写文件: {file_str}")
+            # 写入：必须在 output_dir 或配置的 write_roots 内
+            allowed = any(_path_is_under(p, Path(r).resolve()) for r in write_roots)
+            allowed = allowed or _path_is_under(p, Path(output_dir).resolve())
+            if not allowed:
+                raise PermissionError(f"沙箱禁止写入文件: {file_str}")
             p.parent.mkdir(parents=True, exist_ok=True)
-            return _ORIGINAL_OPEN(str(p), mode, *args, **kwargs)
-        return _ORIGINAL_OPEN(file_str, mode, *args, **kwargs)
+        else:
+            # 读取：只允许在 output_dir、配置的 read_roots 和标准系统路径内
+            allowed = any(_path_is_under(p, Path(r).resolve()) for r in read_roots)
+            allowed = allowed or _path_is_under(p, Path(output_dir).resolve())
+            allowed = allowed or _is_standard_system_path(p)
+            if not allowed:
+                raise PermissionError(f"沙箱禁止读取文件: {file_str}")
+        return _ORIGINAL_OPEN(str(p), mode, *args, **kwargs)
 
     safe["open"] = _sandbox_open
     safe["__import__"] = _safe_import

@@ -10,16 +10,16 @@ from agent_platform.core.registry import SkillRegistry
 from agent_platform.models.provider import ModelProvider
 
 if TYPE_CHECKING:
+    from agent_platform.agents.document_review.knowledge_bases.client import KnowledgeHitClient
+    from agent_platform.audit.store import AuditStore
+    from agent_platform.hitl.store import ApprovalStore
     from agent_platform.memory.session_store import SessionStore
     from agent_platform.memory.summarizer import ConversationSummarizer
     from agent_platform.memory.user_profile import UserProfileStore
-    from agent_platform.audit.store import AuditStore
     from agent_platform.prompts.builder import LayeredPromptBuilder
+    from agent_platform.skills.registry import DeclarativeSkillRegistry
     from agent_platform.tools.budget import ToolBudgetManager
     from agent_platform.tools.rate_limiter import ToolRateLimiter
-    from agent_platform.skills.registry import DeclarativeSkillRegistry
-    from agent_platform.hitl.store import ApprovalStore
-    from agent_platform.agents.document_review.knowledge_bases.client import KnowledgeHitClient
 
 
 @dataclass

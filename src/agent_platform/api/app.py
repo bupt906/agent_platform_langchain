@@ -9,8 +9,6 @@ import httpx
 from fastapi import FastAPI
 from langgraph.checkpoint.sqlite.aio import AsyncSqliteSaver
 
-from agent_platform.skills.registry import DeclarativeSkillRegistry
-from agent_platform.tools import register_all_declarative_tools
 from agent_platform.api.middleware import (
     AuthMiddleware,
     ObservabilityMiddleware,
@@ -22,6 +20,8 @@ from agent_platform.core.deps import PlatformDeps
 from agent_platform.core.registry import SkillRegistry
 from agent_platform.memory import ConversationSummarizer, SessionStore, UserProfileStore
 from agent_platform.models.provider import ModelProvider
+from agent_platform.skills.registry import DeclarativeSkillRegistry
+from agent_platform.tools import register_all_declarative_tools
 
 logger = logging.getLogger(__name__)
 
@@ -38,14 +38,15 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
 
     # ── 持久化存储初始化 ──
     memory_db = await aiosqlite.connect(settings.memory_db_path)
+    await memory_db.execute("PRAGMA journal_mode=WAL")
     audit_db = await aiosqlite.connect(settings.audit_db_path)
+    await audit_db.execute("PRAGMA journal_mode=WAL")
 
     session_store = SessionStore(memory_db)
     user_profile_store = UserProfileStore(memory_db)
     summarizer = ConversationSummarizer(model_provider)
-    # AsyncSqliteSaver 用 aiosqlite 连接，支持异步操作
-    _cp_db = await aiosqlite.connect(settings.memory_db_path)
-    checkpointer = AsyncSqliteSaver(_cp_db)
+    # AsyncSqliteSaver 复用同一个 memory_db 连接，避免多连接竞争
+    checkpointer = AsyncSqliteSaver(memory_db)
 
     from agent_platform.audit.store import AuditStore
 
@@ -89,7 +90,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         # 注入 document_review 技能依赖（聊天路径的 review_document 工具需要 kb_client）
         from agent_platform.agents.document_review import skill as document_review_skill
 
-        document_review_skill._deps = deps
+        document_review_skill.set_deps(deps)
 
         logger.info(
             "智能体中台启动完成，已注册agent: %s",
@@ -100,7 +101,6 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     await memory_db.close()
     await audit_db.close()
     await approval_db.close()
-    await _cp_db.close()
 
 
 app = FastAPI(

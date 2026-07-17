@@ -31,6 +31,11 @@ class DocumentReviewSkill(BaseSkill):
     # 由 api/app.py lifespan 在构造 PlatformDeps 后注入到共享实例（模块尾部的 skill）
     _deps = None
 
+    @classmethod
+    def set_deps(cls, deps) -> None:
+        """显式注入全局依赖，替代脆弱的属性赋值。"""
+        cls._deps = deps
+
     @property
     def name(self) -> str:
         return "document_review"

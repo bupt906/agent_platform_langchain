@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import logging
-from copy import copy
 
 from langchain_core.language_models import BaseChatModel
 from langchain_deepseek import ChatDeepSeek
@@ -15,10 +14,15 @@ logger = logging.getLogger(__name__)
 class ModelProvider:
     """统一的多模型路由，支持 DeepSeek / Qwen / Ollama / OpenAI 等 OpenAI 兼容接口。"""
 
-    def __init__(self, settings: Settings) -> None:
+    def __init__(self, settings: Settings, _cache: dict | None = None, _thinking: bool = False) -> None:
         self._settings = settings
-        self._cache: dict[tuple[str, bool], BaseChatModel] = {}
-        self._thinking = False
+        # 每个实例拥有独立的缓存，避免 with_thinking 副本污染原始缓存
+        self._cache: dict[tuple[str, bool], BaseChatModel] = _cache if _cache is not None else {}
+        self._thinking = _thinking
+
+    @property
+    def default_model(self) -> str:
+        return self._settings.default_model
 
     @property
     def timeout(self) -> int:
@@ -33,9 +37,7 @@ class ModelProvider:
         if enabled == self._thinking:
             return self
 
-        provider = copy(self)
-        provider._thinking = enabled
-        return provider
+        return ModelProvider(self._settings, _cache=self._cache, _thinking=enabled)
 
     def get_model(self, model_id: str | None = None) -> BaseChatModel:
         model_id = model_id or self._settings.default_model

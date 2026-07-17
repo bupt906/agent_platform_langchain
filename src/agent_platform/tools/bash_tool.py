@@ -19,7 +19,6 @@ from pathlib import Path
 
 from langchain_core.tools import tool
 
-
 _SHELL_OPERATORS = {
     "|",
     "||",

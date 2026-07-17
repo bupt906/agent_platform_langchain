@@ -2,8 +2,7 @@ from __future__ import annotations
 
 import json
 import logging
-from collections.abc import Iterator
-from collections.abc import Mapping
+from collections.abc import Iterator, Mapping
 from dataclasses import replace
 from typing import Any
 
@@ -49,7 +48,7 @@ async def chat(request: Request, body: ChatRequest) -> ChatResponse:
         return ChatResponse(
             reply=reply,
             skill_used=body.agent,
-            model_used=body.model or deps.model_provider._settings.default_model,
+            model_used=body.model or deps.model_provider.default_model,
             session_id=body.session_id,
         )
 
@@ -64,7 +63,7 @@ async def chat(request: Request, body: ChatRequest) -> ChatResponse:
         return ChatResponse(
             reply=reply,
             skill_used=body.skill,
-            model_used=body.model or deps.model_provider._settings.default_model,
+            model_used=body.model or deps.model_provider.default_model,
             session_id=body.session_id,
         )
 
@@ -80,7 +79,7 @@ async def chat(request: Request, body: ChatRequest) -> ChatResponse:
     return ChatResponse(
         reply=reply,
         skill_used=decision.skill_name,
-        model_used=body.model or deps.model_provider._settings.default_model,
+        model_used=body.model or deps.model_provider.default_model,
         session_id=body.session_id,
     )
 
@@ -282,7 +281,7 @@ def _compact_tool_value(value: Any, *, depth: int = 0) -> Any:
             compact.append(f"<{len(value) - 20} items omitted>")
         return compact
     if hasattr(value, "content"):
-        return _compact_tool_value(getattr(value, "content"), depth=depth + 1)
+        return _compact_tool_value(value.content, depth=depth + 1)
     if value is None or isinstance(value, (bool, int, float)):
         return value
     return _compact_tool_value(str(value), depth=depth + 1)

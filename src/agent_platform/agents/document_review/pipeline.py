@@ -189,7 +189,7 @@ class ReviewPipeline:
         try:
             model = self._deps.model_provider.get_model()
             response = await model.ainvoke([HumanMessage(content=prompt)])
-            return {**_parse_llm_response(response.content, sentence), "task_id": task_id, "sentence_index": index, "error": False}
+            return {**_parse_llm_response(response.content, sentence, kb_ids), "task_id": task_id, "sentence_index": index, "error": False}
         except Exception as e:
             logger.warning("LLM 审阅失败 [%d]: %s", index, e)
             return {"task_id": task_id, "sentence_index": index, "reviewed_sentence": sentence, "has_issue": "否", "content": {}, "error": True}
@@ -228,8 +228,11 @@ async def run_review_pipeline(
         }
 
 
-def _parse_llm_response(response_text: str, sentence: str) -> dict:
-    """解析 LLM 返回的 JSON 响应。"""
+def _parse_llm_response(response_text: str, sentence: str, kb_ids: list[str] | None = None) -> dict:
+    """解析 LLM 返回的 JSON 响应。
+
+    reference.kb_id 透传 /review 接口传入的原始 kb_ids，而非 LLM 从检索结果中挑选的单个 kb_id。
+    """
     text = response_text.strip()
     if text.startswith("```"):
         lines = text.split("\n")
@@ -270,7 +273,7 @@ def _parse_llm_response(response_text: str, sentence: str) -> dict:
             "error_reason": parsed.get("error_reason", ""),
             "suggestion": parsed.get("suggestion", ""),
             "reference": {
-                "kb_id": ref.get("kb_id", ""),
+                "kb_id": kb_ids if kb_ids is not None else ref.get("kb_id", ""),
                 "kb_file": ref.get("kb_file", ""),
                 "content": ref.get("content", ""),
             },

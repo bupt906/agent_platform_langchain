@@ -46,7 +46,6 @@ def parse_document(file_path: str) -> str:
 
 def _parse_from_url(url: str) -> str:
     """从 HTTP URL 下载文档并解析（带超时，避免慢速源挂死工作线程）。"""
-    import shutil
     import tempfile
     import urllib.request
     from urllib.parse import quote, urlparse, urlunparse
@@ -56,9 +55,23 @@ def _parse_from_url(url: str) -> str:
     # 对路径中的非 ASCII 字符做百分号编码，避免 urllib 抛出 ASCII 编码错误
     encoded_url = urlunparse(parsed._replace(path=quote(parsed.path, safe='/:@')))
 
+    # 下载前先检查 Content-Length（若服务端提供）
+    max_size = 50 * 1024 * 1024  # 50MB
+    try:
+        head_req = urllib.request.Request(encoded_url, method="HEAD")
+        with urllib.request.urlopen(head_req, timeout=10) as resp:
+            content_length = resp.headers.get("Content-Length")
+            if content_length and int(content_length) > max_size:
+                raise ValueError(f"文件过大 ({int(content_length)} bytes)，最大允许 {max_size} bytes")
+    except urllib.error.URLError:
+        pass  # HEAD 请求失败时继续尝试 GET
+
     with tempfile.NamedTemporaryFile(suffix=suffix, delete=False) as tmp:
         urllib.request.urlretrieve(encoded_url, tmp.name)
         tmp_path = Path(tmp.name)
+        if tmp_path.stat().st_size > max_size:
+            tmp_path.unlink(missing_ok=True)
+            raise ValueError(f"下载文件过大，最大允许 {max_size} bytes")
 
     try:
         if suffix in (".txt", ".md", ".markdown"):

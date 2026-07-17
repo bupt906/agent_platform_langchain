@@ -18,8 +18,8 @@ from agent_platform.graph.events import (
 if TYPE_CHECKING:
     from langgraph.graph.state import CompiledStateGraph
 
-    from agent_platform.core.deps import PlatformDeps
     from agent_platform.agents.base import BaseSkill
+    from agent_platform.core.deps import PlatformDeps
 
 logger = logging.getLogger(__name__)
 

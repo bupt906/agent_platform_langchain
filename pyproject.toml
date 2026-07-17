@@ -45,3 +45,16 @@ testpaths = ["tests"]
 
 [tool.ruff]
 line-length = 120
+
+[tool.ruff.lint]
+select = [
+    "F",    # Pyflakes: 未使用的导入、未定义变量等
+    "E",    # Pycodestyle 错误
+    "W",    # Pycodestyle 警告
+    "B",    # Flake8-bugbear: 常见 bug 检测
+    "I",    # isort: 导入排序
+]
+ignore = [
+    "E501",  # 行过长（由 line-length 处理）
+    "B008",  # 函数参数默认值中调用函数（如 Field(default_factory=...)）
+]

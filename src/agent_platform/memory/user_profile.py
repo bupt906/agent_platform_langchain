@@ -54,13 +54,17 @@ class UserProfileStore:
         }
 
     async def update_profile(self, session_id: str, profile: dict[str, Any]) -> None:
-        """创建或更新用户画像。"""
+        """创建或更新用户画像（保留已有的 preferences）。"""
         await self._ensure_tables()
         now = datetime.now(timezone.utc).isoformat()
         profile_json = json.dumps(profile, ensure_ascii=False)
+        existing = await self.get_profile(session_id)
+        existing_prefs = json.dumps(existing["preferences"], ensure_ascii=False)
         await self._db.execute(
-            "INSERT OR REPLACE INTO user_profiles (session_id, profile_json, updated_at) VALUES (?, ?, ?)",
-            (session_id, profile_json, now),
+            "INSERT INTO user_profiles (session_id, profile_json, preferences_json, updated_at) "
+            "VALUES (?, ?, ?, ?) ON CONFLICT(session_id) DO UPDATE SET "
+            "profile_json = excluded.profile_json, updated_at = excluded.updated_at",
+            (session_id, profile_json, existing_prefs, now),
         )
         await self._db.commit()
 

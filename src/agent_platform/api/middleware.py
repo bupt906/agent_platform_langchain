@@ -28,7 +28,15 @@ class AuthMiddleware(BaseHTTPMiddleware):
     """Bearer Token 认证中间件。
 
     配置 Settings.api_key 后生效；不配置则跳过认证。
+
+    受保护路径前缀（当 api_key 配置时强制要求认证）：
+    - /audit（审计日志）
+    - /hitl（人机协同审批）
+    - /api/callback（回调节点）
     """
+
+    # 敏感路径前缀——即使全局 api_key 未配置，也建议在生产中保护
+    _SENSITIVE_PREFIXES = ("/audit", "/hitl", "/api/callback")
 
     def __init__(self, app: ASGIApp, api_key: str | None = None) -> None:
         super().__init__(app)
@@ -72,7 +80,13 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
         if request.url.path == "/health":
             return await call_next(request)
 
-        client = request.client.host if request.client else "unknown"
+        # 优先使用 X-Forwarded-For 头（代理后），再回退到直连 IP，最后用 X-Real-IP
+        client = (
+            request.headers.get("X-Forwarded-For", "").split(",")[0].strip()
+            or (request.client.host if request.client else None)
+            or request.headers.get("X-Real-IP", "")
+            or "unknown"
+        )
         now = time.monotonic()
 
         if client not in self._buckets:

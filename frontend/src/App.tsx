@@ -18,6 +18,14 @@ export default function App() {
             <Route path="/review-tasks" element={<ReviewTasksPage />} />
             <Route path="/graphs" element={<GraphViewerPage />} />
             <Route path="/tokens" element={<TokenUsagePage />} />
+            <Route path="*" element={
+              <div className="flex items-center justify-center h-full text-gray-400">
+                <div className="text-center">
+                  <p className="text-4xl mb-2">404</p>
+                  <p className="text-sm">页面不存在</p>
+                </div>
+              </div>
+            } />
           </Routes>
         </main>
       </div>
