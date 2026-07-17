@@ -19,6 +19,7 @@ if TYPE_CHECKING:
     from agent_platform.tools.rate_limiter import ToolRateLimiter
     from agent_platform.skills.registry import DeclarativeSkillRegistry
     from agent_platform.hitl.store import ApprovalStore
+    from agent_platform.agents.document_review.knowledge_bases.client import KnowledgeHitClient
 
 
 @dataclass
@@ -52,4 +53,4 @@ class PlatformDeps:
     approval_store: ApprovalStore | None = None
 
     # ── 知识库 ──
-    kb_registry: KnowledgeBaseRegistry | None = None  # type: ignore[name-defined]
+    kb_client: KnowledgeHitClient | None = None

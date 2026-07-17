@@ -86,6 +86,13 @@ class CallbackBatchItem(BaseModel):
     reviewed_sentence: str
     has_issue: str = "否"  # "是" | "否"
     content: dict = {}
+    error: bool = False
+
+
+class CallbackBatchRequest(BaseModel):
+    """审阅结果批量提交请求：{"results": [...]}。"""
+
+    results: list[CallbackBatchItem]
 
 
 class CallbackResponse(BaseModel):

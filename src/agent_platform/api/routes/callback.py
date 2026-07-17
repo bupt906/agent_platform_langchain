@@ -6,7 +6,7 @@ import logging
 
 from fastapi import APIRouter, Request
 
-from agent_platform.api.schemas import CallbackBatchItem, CallbackResponse, TaskStatusRequest
+from agent_platform.api.schemas import CallbackBatchRequest, CallbackResponse, TaskStatusRequest
 
 logger = logging.getLogger(__name__)
 
@@ -30,14 +30,15 @@ async def update_task_status(request: Request, body: TaskStatusRequest) -> Callb
 
 
 @router.post("/batch", response_model=CallbackResponse)
-async def submit_batch_results(request: Request, body: list[CallbackBatchItem]) -> CallbackResponse:
-    """批量提交审阅结果。"""
-    task_id = body[0].task_id if body else 0
+async def submit_batch_results(request: Request, body: CallbackBatchRequest) -> CallbackResponse:
+    """批量提交审阅结果。请求体为 {"results": [...]}。"""
+    items = body.results
+    task_id = items[0].task_id if items else 0
     _review_results.setdefault(task_id, []).extend(
-        [item.model_dump() for item in body]
+        [item.model_dump() for item in items]
     )
-    logger.info("审阅结果提交: task_id=%d count=%d", task_id, len(body))
-    return CallbackResponse(code=200, msg="操作成功", data=len(body))
+    logger.info("审阅结果提交: task_id=%d count=%d", task_id, len(items))
+    return CallbackResponse(code=200, msg="操作成功", data=len(items))
 
 
 @router.get("/task/status/{task_id}")
