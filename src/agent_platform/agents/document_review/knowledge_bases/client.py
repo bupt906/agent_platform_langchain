@@ -96,7 +96,10 @@ class KnowledgeHitClient:
                 )
             except Exception as e:  # 网络错误/超时 → 可重试
                 last_error = e
-                logger.warning("知识库检索请求失败（第 %d 次）: %s", attempt + 1, e)
+                logger.warning(
+                    "知识库检索请求失败（第 %d 次）: [%s] %s | url=%s",
+                    attempt + 1, type(e).__name__, e, self._url,
+                )
                 continue
 
             # 4xx 客户端错误（鉴权失败、参数非法等）→ 不可重试

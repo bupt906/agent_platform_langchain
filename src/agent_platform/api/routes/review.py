@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import logging
 
 from fastapi import APIRouter, HTTPException, Request
@@ -23,17 +24,36 @@ def _get_deps(request: Request) -> PlatformDeps:
 
 @router.post("")
 async def review_document(request: Request, body: ReviewRequest) -> dict:
-    """对文档执行逐句审阅，结果通过回调 POST /api/callback/batch 返回。"""
+    """对文档执行逐句审阅（异步），结果通过回调 POST /api/callback/batch 返回。
+
+    接口收到请求后立刻返回，审阅在后台执行：
+    - 审阅中 → callback 520
+    - 审阅完毕 → callback 530 + 结果批量提交
+    - 审阅失败 → callback 777
+    """
     deps = _get_deps(request)
 
     if not body.kb_ids:
         raise HTTPException(status_code=400, detail="kb_ids 不能为空")
 
-    # kb_ids 为外部知识库平台的 ID，有效性由 hit 接口调用时校验
+    if not body.file_path:
+        raise HTTPException(status_code=400, detail="file_path 不能为空")
 
     # 通知审阅中
-    await _notify_task_status(deps, body.task_id, "1")
+    await _notify_task_status(deps, body.task_id, "520")
 
+    # 启动后台审阅任务，立刻返回
+    asyncio.create_task(_run_review_background(deps, body))
+
+    logger.info("审阅任务已接单: task_id=%d", body.task_id)
+    return {"task_id": body.task_id, "uuid": body.uuid, "status": "accepted"}
+
+
+# ── 后台审阅 ──────────────────────────────────────────────
+
+
+async def _run_review_background(deps: PlatformDeps, body: ReviewRequest) -> None:
+    """后台执行审阅流水线，完成/失败后通过回调通知。"""
     try:
         from agent_platform.agents.document_review.pipeline import run_review_pipeline
 
@@ -45,7 +65,6 @@ async def review_document(request: Request, body: ReviewRequest) -> dict:
         )
 
         results = result.get("results", [])
-        # uuid 透传到每条结果
         if body.uuid:
             for r in results:
                 r["uuid"] = body.uuid
@@ -60,22 +79,19 @@ async def review_document(request: Request, body: ReviewRequest) -> dict:
 
         error_count = result.get("summary", {}).get("errors", 0)
         if error_count > 0 or submit_error:
-            await _notify_task_status(deps, body.task_id, "3")
+            await _notify_task_status(deps, body.task_id, "777")
         else:
-            await _notify_task_status(deps, body.task_id, "2")
-
-        return {"task_id": body.task_id, "uuid": body.uuid, "status": "ok"}
+            await _notify_task_status(deps, body.task_id, "530")
 
     except FileNotFoundError as e:
-        await _notify_task_status(deps, body.task_id, "3")
-        raise HTTPException(status_code=404, detail=str(e))
+        logger.warning("审阅文件未找到: %s", e)
+        await _notify_task_status(deps, body.task_id, "777")
     except ValueError as e:
-        await _notify_task_status(deps, body.task_id, "3")
-        raise HTTPException(status_code=400, detail=str(e))
-    except Exception as e:
-        logger.exception("文档审阅失败")
-        await _notify_task_status(deps, body.task_id, "3")
-        raise HTTPException(status_code=500, detail=f"审阅失败: {e}")
+        logger.warning("审阅参数错误: %s", e)
+        await _notify_task_status(deps, body.task_id, "777")
+    except Exception:
+        logger.exception("文档审阅失败: task_id=%d", body.task_id)
+        await _notify_task_status(deps, body.task_id, "777")
 
 
 # ── 内部 helper ───────────────────────────────────────────

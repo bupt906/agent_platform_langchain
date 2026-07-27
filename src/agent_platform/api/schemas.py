@@ -75,7 +75,7 @@ class TaskStatusRequest(BaseModel):
     """更新任务状态请求。"""
 
     taskId: int = 0
-    status: str = ""  # "1"=审阅中 "2"=审阅完毕 "3"=失败
+    status: str = ""  # "520"=审阅中 "530"=审阅完毕 "777"=失败
 
 
 class CallbackBatchItem(BaseModel):

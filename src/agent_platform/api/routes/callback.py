@@ -34,7 +34,7 @@ def _cleanup_oldest(store: dict, max_entries: int = _MAX_ENTRIES) -> None:
 async def update_task_status(request: Request, body: TaskStatusRequest) -> CallbackResponse:
     """更新任务状态。
 
-    status: "1"=审阅中 "2"=审阅完毕 "3"=失败
+    status: "520"=审阅中 "530"=审阅完毕 "777"=失败
     """
     _task_statuses[body.taskId] = body.status
     _cleanup_oldest(_task_statuses)

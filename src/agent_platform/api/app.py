@@ -7,6 +7,7 @@ from contextlib import asynccontextmanager
 import aiosqlite
 import httpx
 from fastapi import FastAPI
+from fastapi.middleware.cors import CORSMiddleware
 from langgraph.checkpoint.sqlite.aio import AsyncSqliteSaver
 
 from agent_platform.api.middleware import (
@@ -63,7 +64,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     declarative_registry = DeclarativeSkillRegistry()
     logger.info("声明式 Skills 加载完成，共 %d 个", declarative_registry.count)
 
-    async with httpx.AsyncClient() as http_client:
+    async with httpx.AsyncClient(proxy=None) as http_client:
         # ── 外部知识库客户端（万悟平台 hit 检索接口）──
         from agent_platform.agents.document_review.knowledge_bases.client import KnowledgeHitClient
 
@@ -111,6 +112,15 @@ app = FastAPI(
 )
 
 # ── 中间件注册（顺序：外→内） ──────────────────────────────
+
+# 0. CORS 跨域（最外层，必须在所有中间件之前）
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],  # 生产环境应限制为前端域名
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 
 # 1. 可观测性（最外层，统计完整耗时）
 app.add_middleware(ObservabilityMiddleware)
