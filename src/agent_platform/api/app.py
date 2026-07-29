@@ -15,7 +15,7 @@ from agent_platform.api.middleware import (
     ObservabilityMiddleware,
     RateLimitMiddleware,
 )
-from agent_platform.api.routes import audit, callback, chat, hitl, review, skills
+from agent_platform.api.routes import audit, callback, chat, hitl, preferences, review, skills
 from agent_platform.config.settings import settings
 from agent_platform.core.deps import PlatformDeps
 from agent_platform.core.registry import SkillRegistry
@@ -139,6 +139,7 @@ app.include_router(audit.router)
 app.include_router(hitl.router)
 app.include_router(review.router)
 app.include_router(callback.router)
+app.include_router(preferences.router)
 
 
 @app.get("/favicon.ico")

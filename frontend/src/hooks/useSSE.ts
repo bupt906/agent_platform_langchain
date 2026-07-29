@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from "react";
+import { apiUrl } from "../lib/api";
 
 export interface SSEMessage {
   type: string;
@@ -31,7 +32,7 @@ export function useSSE() {
   }, []);
 
   const send = useCallback(
-    (body: { message: string; agent?: string; skill?: string; thinking?: boolean; session_id?: string }) => {
+    (body: { message: string; agent?: string; skill?: string; model?: string; thinking?: boolean; session_id?: string; profile_id?: string; response_mode?: "general" | "auto" }) => {
       abortRef.current?.abort();
       const ctrl = new AbortController();
       abortRef.current = ctrl;
@@ -41,7 +42,7 @@ export function useSSE() {
       setMessages([]);
       setIsStreaming(true);
 
-      fetch("/chat/stream", {
+      fetch(apiUrl("/chat/stream"), {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(body),

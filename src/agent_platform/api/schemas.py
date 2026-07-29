@@ -1,6 +1,8 @@
 from __future__ import annotations
 
-from pydantic import BaseModel
+from typing import Literal
+
+from pydantic import BaseModel, Field
 
 
 class ChatRequest(BaseModel):
@@ -9,7 +11,22 @@ class ChatRequest(BaseModel):
     skill: str | None = None  # 显式指定声明式 Skill（skills/ 目录下）
     model: str | None = None
     session_id: str | None = None
+    profile_id: str | None = None  # 浏览器持久化偏好 ID（可选）
+    response_mode: Literal["general", "auto"] = "auto"  # 未指定能力时的处理方式
     thinking: bool = False  # 是否启用并流式返回模型思考内容
+
+
+class PreferencesRequest(BaseModel):
+    """用户工作台偏好。由 profile_id 隔离并持久化至 SQLite。"""
+
+    theme: Literal["light", "dark", "system"] = "light"
+    default_model: str = Field(default="", max_length=200)
+    api_base_url: str = Field(default="", max_length=500)
+
+
+class PreferencesResponse(PreferencesRequest):
+    profile_id: str
+    updated_at: str | None = None
 
 
 class ChatResponse(BaseModel):

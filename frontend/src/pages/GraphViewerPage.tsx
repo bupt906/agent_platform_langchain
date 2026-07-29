@@ -1,18 +1,13 @@
+import { Link } from "react-router-dom";
+import { ArrowUpRight, CircleDotDashed, FileText, GitBranch, Network, Sparkles } from "lucide-react";
+import { PageTitle } from "./DashboardPage";
+
 export default function GraphViewerPage() {
-  return (
-    <div className="p-6 space-y-4 overflow-y-auto h-full">
-      <h2 className="text-lg font-semibold">知识图谱</h2>
-      <p className="text-sm text-gray-500">
-        Knowledge Graph 抽取完成后，通过 viewer.html 查看交互式图谱。
-        当前页面为占位，后续可集成 generate_viewer.py 的输出列表。
-      </p>
-      <div className="bg-white rounded-xl border border-gray-200 p-8 text-center text-gray-400">
-        图谱列表将在后续版本中支持。
-        <br />
-        现在可以通过对话页使用 knowledge-graph-extraction Skill 生成图谱，
-        <br />
-        生成后在输出目录中打开 viewer.html 查看。
-      </div>
-    </div>
-  );
+  return <div className="h-dvh overflow-y-auto"><div className="mx-auto max-w-6xl px-5 py-7 sm:px-8 lg:px-10"><PageTitle eyebrow="KNOWLEDGE GRAPH" title="知识图谱" description="从非结构化文档中提取实体、关系与可视化视图。" />
+    <section className="panel overflow-hidden"><div className="relative overflow-hidden bg-slate-900 px-6 py-8 text-white sm:px-9 sm:py-10"><div className="absolute -right-12 -top-16 h-64 w-64 rounded-full bg-blue-500/20 blur-3xl" /><div className="absolute bottom-0 left-1/3 h-40 w-72 rounded-full bg-violet-500/15 blur-3xl" /><div className="relative max-w-xl"><span className="flex h-10 w-10 items-center justify-center rounded-xl bg-white/10 text-blue-200"><Network size={21} /></span><h2 className="mt-5 text-xl font-semibold">把文档转化为可探索的知识网络</h2><p className="mt-3 text-sm leading-6 text-slate-300">知识图谱抽取由声明式 Skill 驱动。完成后会在你指定的输出目录生成交互式 viewer.html 文件。</p><Link to="/" className="mt-6 inline-flex items-center gap-1.5 rounded-xl bg-white px-4 py-2.5 text-sm font-medium text-slate-800 shadow-lg shadow-black/15 transition hover:bg-blue-50">开始图谱抽取 <ArrowUpRight size={16} /></Link></div></div>
+      <div className="grid gap-5 p-6 sm:p-8 md:grid-cols-3"><Step icon={FileText} number="01" title="准备文档" text="在对话中提供待处理文件的完整路径与输出目录。" /><Step icon={Sparkles} number="02" title="抽取与校验" text="Agent 会设计 Schema，提取实体关系并校验图谱质量。" /><Step icon={GitBranch} number="03" title="打开视图" text="在生成目录中打开 viewer.html，即可浏览交互式图谱。" /></div></section>
+    <section className="panel mt-6 p-6 sm:p-8"><div className="flex flex-col items-center justify-between gap-7 sm:flex-row"><div className="flex items-start gap-4"><div className="flex h-11 w-11 shrink-0 items-center justify-center rounded-xl bg-slate-100 text-slate-500"><CircleDotDashed size={21} /></div><div><h2 className="text-sm font-semibold text-slate-800">还没有可展示的图谱</h2><p className="mt-2 max-w-lg text-sm leading-6 text-slate-500">当前后端会将图谱查看器作为文件生成在指定输出目录，尚未提供图谱列表接口。这里会在接口接入后自动展示历史图谱。</p></div></div><Link to="/" className="shrink-0 text-sm font-medium text-blue-600 transition hover:text-blue-800">前往智能对话 →</Link></div></section>
+  </div></div>;
 }
+
+function Step({ icon: Icon, number, title, text }: { icon: typeof FileText; number: string; title: string; text: string }) { return <div className="relative"><span className="absolute right-0 top-0 text-xs font-semibold text-slate-200">{number}</span><span className="flex h-10 w-10 items-center justify-center rounded-xl bg-blue-50 text-blue-600"><Icon size={19} /></span><h3 className="mt-4 text-sm font-semibold text-slate-700">{title}</h3><p className="mt-1.5 text-xs leading-5 text-slate-500">{text}</p></div>; }

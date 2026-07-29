@@ -1,83 +1,36 @@
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState, type ReactNode } from "react";
+import { BarChart3, Coins, Gauge, LoaderCircle, RefreshCw, SlidersHorizontal, TriangleAlert } from "lucide-react";
+import { Bar, BarChart, ResponsiveContainer, Tooltip, XAxis, YAxis } from "recharts";
 import { api, type AuditRecord } from "../lib/api";
 
-export default function TokenUsagePage() {
+export function TokenUsageSection() {
   const [records, setRecords] = useState<AuditRecord[]>([]);
-  const [skillFilter, setSkillFilter] = useState("");
-  const [error, setError] = useState<string | null>(null);
+  const [skill, setSkill] = useState("");
   const [loading, setLoading] = useState(true);
+  const [error, setError] = useState("");
+  const load = () => { setLoading(true); setError(""); const params: Record<string, string> = { limit: "100" }; if (skill) params.skill_used = skill; api.getAuditRecords(params).then((data) => setRecords(data.records || [])).catch(() => setError("无法读取用量记录，请稍后重试。")).finally(() => setLoading(false)); };
+  useEffect(load, [skill]);
+  const total = records.reduce((sum, record) => sum + (record.tokens_total || 0), 0);
+  const average = records.length ? Math.round(total / records.length) : 0;
+  const chart = useMemo(() => records.slice(0, 12).reverse().map((record, index) => ({ name: `${index + 1}`, tokens: record.tokens_total || 0 })), [records]);
+  const skillOptions = Array.from(new Set(records.map((record) => record.skill_used).filter(Boolean))) as string[];
+  const bySkill = useMemo(() => records.reduce<Record<string, number>>((totals, record) => { const name = record.skill_used || "general"; totals[name] = (totals[name] || 0) + (record.tokens_total || 0); return totals; }, {}), [records]);
+  const topSkill = Object.entries(bySkill).sort(([, left], [, right]) => right - left)[0];
+  const concentration = total && topSkill ? Math.round((topSkill[1] / total) * 100) : 0;
 
-  useEffect(() => {
-    let cancelled = false;
-    setLoading(true);
-    setError(null);
-
-    const params: Record<string, string> = { limit: "100" };
-    if (skillFilter) params.skill_used = skillFilter;
-
-    api.getAuditRecords(params)
-      .then(d => {
-        if (!cancelled) setRecords(d.records || []);
-      })
-      .catch(e => {
-        if (!cancelled) setError(String(e));
-      })
-      .finally(() => {
-        if (!cancelled) setLoading(false);
-      });
-
-    return () => { cancelled = true; };
-  }, [skillFilter]);
-
-  const totalTokens = records.reduce((s, r) => s + (r.tokens_total || 0), 0);
-
-  return (
-    <div className="p-6 space-y-6 overflow-y-auto h-full">
-      <div className="flex items-center justify-between">
-        <h2 className="text-lg font-semibold">用量分析</h2>
-        <select className="border rounded-lg px-3 py-1.5 text-sm" value={skillFilter} onChange={e => setSkillFilter(e.target.value)}>
-          <option value="">全部 Skill</option>
-          <option value="document_review">document_review</option>
-          <option value="knowledge-graph-extraction">knowledge-graph-extraction</option>
-        </select>
-      </div>
-
-      {error && <div className="text-sm text-red-500">加载失败: {error}</div>}
-
-      <div className="grid grid-cols-2 gap-4">
-        <div className="bg-white rounded-xl border border-gray-200 p-5">
-          <p className="text-sm text-gray-500">总 Token 消耗</p>
-          <p className="text-2xl font-bold text-blue-600">{(totalTokens / 1000).toFixed(1)}K</p>
-        </div>
-        <div className="bg-white rounded-xl border border-gray-200 p-5">
-          <p className="text-sm text-gray-500">调用次数</p>
-          <p className="text-2xl font-bold">{records.length}</p>
-        </div>
-      </div>
-
-      <div className="bg-white rounded-xl border border-gray-200 p-5">
-        <h3 className="text-sm font-medium text-gray-600 mb-4">Token 消耗明细</h3>
-        {loading ? (
-          <div className="text-sm text-gray-400">加载中...</div>
-        ) : records.length > 0 ? (
-          <table className="w-full text-sm">
-            <thead><tr className="text-left text-gray-400 border-b"><th className="pb-2">时间</th><th className="pb-2">Session</th><th className="pb-2">Skill</th><th className="pb-2">Token</th><th className="pb-2">耗时</th></tr></thead>
-            <tbody>
-              {records.map((r) => (
-                <tr key={r.id} className="border-b border-gray-50">
-                  <td className="py-2 text-gray-500">{r.created_at?.slice(0, 19) || "-"}</td>
-                  <td className="py-2 text-gray-500 font-mono text-xs">{r.session_id?.slice(0, 12) || "-"}</td>
-                  <td className="py-2">{r.skill_used}</td>
-                  <td className="py-2">{r.tokens_total?.toLocaleString()}</td>
-                  <td className="py-2 text-gray-500">{(r.duration_ms / 1000).toFixed(1)}s</td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        ) : (
-          <div className="text-sm text-gray-400 text-center py-4">暂无记录</div>
-        )}
-      </div>
-    </div>
-  );
+  return <section className="mt-10 border-t border-slate-200/80 pt-10"><UsageTitle action={<div className="flex items-center gap-2"><div className="relative"><SlidersHorizontal size={14} className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" /><select value={skill} onChange={(event) => setSkill(event.target.value)} className="focus-ring appearance-none rounded-xl border border-slate-200 bg-white py-2 pl-8 pr-8 text-xs text-slate-600"><option value="">全部能力</option>{skillOptions.map((option) => <option key={option} value={option}>{option}</option>)}</select></div><button onClick={load} className="rounded-xl border border-slate-200 bg-white p-2 text-slate-500 transition hover:bg-slate-50" aria-label="刷新"><RefreshCw size={15} className={loading ? "animate-spin" : ""} /></button></div>} />
+    {error && <div className="mb-5 flex items-center gap-2 rounded-xl border border-rose-100 bg-rose-50 px-4 py-3 text-sm text-rose-600"><TriangleAlert size={16} />{error}</div>}
+    <div className="grid gap-4 md:grid-cols-3"><UsageCard icon={Coins} label="总 Token 消耗" value={formatToken(total)} text="当前筛选条件下的累计用量" tone="blue" /><UsageCard icon={Gauge} label="平均单次用量" value={formatToken(average)} text="用于识别上下文或输出偏长的调用" tone="violet" /><UsageCard icon={BarChart3} label="主要消耗能力" value={topSkill?.[0] || "—"} text={topSkill ? `占当前 Token 用量的 ${concentration}%` : "暂无可归因的用量记录"} tone="amber" /></div>
+    <div className="mt-6 grid gap-5 xl:grid-cols-[1.15fr_.85fr]"><section className="panel p-5 sm:p-6"><div><h2 className="text-sm font-semibold text-slate-800">最近调用用量</h2><p className="mt-1 text-xs text-slate-400">按时间顺序展示最近 12 次调用</p></div><div className="mt-5 h-[260px]">{loading ? <LoadingChart /> : chart.length ? <ResponsiveContainer width="100%" height="100%"><BarChart data={chart} barSize={24}><XAxis dataKey="name" axisLine={false} tickLine={false} tick={{ fontSize: 11, fill: "#94a3b8" }} /><YAxis axisLine={false} tickLine={false} tick={{ fontSize: 11, fill: "#94a3b8" }} width={42} /><Tooltip cursor={{ fill: "#f1f5f9" }} contentStyle={{ borderRadius: 12, border: "1px solid #e2e8f0", fontSize: 12 }} formatter={(value) => [`${Number(value).toLocaleString()} tokens`, "用量"]} /><Bar dataKey="tokens" fill="#8168ee" radius={[7, 7, 2, 2]} /></BarChart></ResponsiveContainer> : <EmptyUsage />}</div></section>
+      <section className="panel overflow-hidden"><div className="border-b border-slate-100 p-5 sm:p-6"><h2 className="text-sm font-semibold text-slate-800">用量优化建议</h2><p className="mt-1 text-xs text-slate-400">帮助减少不必要的上下文与模型轮次</p></div><div className="space-y-4 p-5 sm:p-6"><Insight icon={BarChart3} title="复用会话上下文" text="持续对话建议复用 session_id，平台可以保存历史与摘要，避免重复输入同一背景。" /><Insight icon={Coins} title="为复杂任务指定专业 Skill" text="声明式 Skill 能按工具预算执行复杂任务，减少无目标的模型轮次与 Token 消耗。" /></div></section></div>
+    <section className="panel mt-6 overflow-hidden"><div className="border-b border-slate-100 px-5 py-5 sm:px-6"><h2 className="text-sm font-semibold text-slate-800">调用明细</h2><p className="mt-1 text-xs text-slate-400">审计日志中的 Token 与执行耗时</p></div>{loading ? <div className="flex h-36 items-center justify-center text-sm text-slate-400"><LoaderCircle size={17} className="mr-2 animate-spin" />正在加载</div> : records.length ? <div className="overflow-x-auto"><table className="w-full min-w-[700px] text-left text-xs"><thead className="bg-slate-50 text-slate-400"><tr><th className="px-6 py-3 font-medium">调用时间</th><th className="px-4 py-3 font-medium">Session</th><th className="px-4 py-3 font-medium">处理能力</th><th className="px-4 py-3 font-medium">Token</th><th className="px-6 py-3 text-right font-medium">耗时</th></tr></thead><tbody>{records.map((record) => <tr key={record.id} className="border-t border-slate-100 hover:bg-slate-50/70"><td className="px-6 py-4 text-slate-500">{formatTime(record.timestamp)}</td><td className="px-4 py-4 font-mono text-[11px] text-slate-400">{record.session_id ? `${record.session_id.slice(0, 10)}…` : "—"}</td><td className="px-4 py-4"><span className="rounded-md bg-violet-50 px-2 py-1 text-violet-700">{record.skill_used || "general"}</span></td><td className="px-4 py-4 font-medium text-slate-700">{(record.tokens_total || 0).toLocaleString("zh-CN")}</td><td className="px-6 py-4 text-right text-slate-500">{((record.duration_ms || 0) / 1000).toFixed(1)}s</td></tr>)}</tbody></table></div> : <EmptyUsage />}</section>
+  </section>;
 }
+
+function UsageCard({ icon: Icon, label, value, text, tone }: { icon: typeof Coins; label: string; value: string; text: string; tone: "blue" | "violet" | "amber" }) { const color = tone === "blue" ? "bg-blue-50 text-blue-600" : tone === "violet" ? "bg-violet-50 text-violet-600" : "bg-amber-50 text-amber-600"; return <div className="panel p-5"><span className={`flex h-10 w-10 items-center justify-center rounded-xl ${color}`}><Icon size={20} /></span><p className="mt-5 text-[13px] font-medium text-slate-500">{label}</p><p className="mt-1 text-2xl font-semibold tracking-tight text-slate-800">{value}</p><p className="mt-2 text-xs text-slate-400">{text}</p></div>; }
+function UsageTitle({ action }: { action: ReactNode }) { return <div className="mb-7 flex flex-col justify-between gap-4 sm:flex-row sm:items-end"><div><p className="text-[10px] font-semibold tracking-[.16em] text-violet-600">TOKEN USAGE</p><h2 className="mt-2 text-2xl font-semibold tracking-tight text-slate-800">Token 用量</h2><p className="mt-2 text-sm text-slate-500">聚焦模型消耗结构，定位高用量的能力与调用记录。</p></div>{action}</div>; }
+function Insight({ icon: Icon, title, text }: { icon: typeof Coins; title: string; text: string }) { return <div className="flex gap-3"><span className="mt-0.5 rounded-lg bg-blue-50 p-1.5 text-blue-600"><Icon size={15} /></span><div><p className="text-xs font-medium text-slate-700">{title}</p><p className="mt-1 text-xs leading-5 text-slate-500">{text}</p></div></div>; }
+function LoadingChart() { return <div className="flex h-full items-end gap-3 px-5 pb-4"><span className="h-[40%] flex-1 animate-pulse rounded-t-lg bg-slate-100" /><span className="h-[70%] flex-1 animate-pulse rounded-t-lg bg-slate-100" /><span className="h-[54%] flex-1 animate-pulse rounded-t-lg bg-slate-100" /><span className="h-[82%] flex-1 animate-pulse rounded-t-lg bg-slate-100" /></div>; }
+function EmptyUsage() { return <div className="flex h-36 items-center justify-center text-sm text-slate-400">暂无可展示的用量数据</div>; }
+function formatToken(value: number) { return value >= 1000 ? `${(value / 1000).toFixed(value >= 10_000 ? 0 : 1)}K` : value.toLocaleString("zh-CN"); }
+function formatTime(value: string) { if (!value) return "—"; const date = new Date(value); return Number.isNaN(date.getTime()) ? value.slice(0, 16) : date.toLocaleString("zh-CN", { month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit" }); }

@@ -3,6 +3,7 @@ from __future__ import annotations
 from langchain_core.messages import AIMessageChunk
 
 from agent_platform.api.routes.chat import (
+    _apply_saved_preferences,
     _chunk_deltas,
     _model_end_data,
     _tool_event_data,
@@ -14,6 +15,44 @@ def test_chat_request_disables_thinking_by_default() -> None:
     request = ChatRequest(message="测试")
 
     assert request.thinking is False
+
+
+async def test_saved_preferences_fill_missing_model() -> None:
+    class ProfileStore:
+        async def get_profile(self, profile_id: str):
+            assert profile_id == "browser-profile"
+            return {
+                "preferences": {
+                    "default_model": "deepseek:deepseek-chat",
+                }
+            }
+
+    class Deps:
+        user_profile_store = ProfileStore()
+
+    effective = await _apply_saved_preferences(
+        ChatRequest(message="测试", profile_id="browser-profile"), Deps()
+    )
+
+    assert effective.model == "deepseek:deepseek-chat"
+
+
+async def test_request_values_override_saved_preferences() -> None:
+    class ProfileStore:
+        async def get_profile(self, profile_id: str):
+            return {"preferences": {"default_model": "deepseek:deepseek-chat"}}
+
+    class Deps:
+        user_profile_store = ProfileStore()
+
+    effective = await _apply_saved_preferences(
+        ChatRequest(message="测试", profile_id="browser-profile", agent="custom_agent", model="qwen:qwen-plus"), Deps()
+    )
+
+    assert effective.agent == "custom_agent"
+    assert effective.model == "qwen:qwen-plus"
+
+
 
 
 def test_chunk_deltas_separates_reasoning_and_answer() -> None:

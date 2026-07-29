@@ -1,5 +1,12 @@
 // 开发环境通过 Vite proxy 转发，生产环境需设置为实际后端地址
-const BASE = import.meta.env.VITE_API_BASE_URL || "";
+import { getPreferences } from "./preferences";
+
+const BUILD_BASE = import.meta.env.VITE_API_BASE_URL || "";
+
+export function apiUrl(path: string, baseUrl?: string) {
+  const resolvedBase = baseUrl === undefined ? getPreferences().apiBaseUrl || BUILD_BASE : baseUrl || BUILD_BASE;
+  return `${resolvedBase}${path}`;
+}
 
 export interface SkillInfo {
   name: string;
@@ -14,7 +21,7 @@ export interface AuditStats {
   total_duration_ms: number;
   avg_duration_ms: number;
   by_skill: Record<string, number>;
-  error_count: number;
+  errors: number;
 }
 
 export interface AuditRecord {
@@ -26,7 +33,7 @@ export interface AuditRecord {
   tokens_total: number;
   duration_ms: number;
   skill_used: string;
-  created_at: string;
+  timestamp: string;
   error?: string;
 }
 
@@ -45,17 +52,31 @@ export interface ReviewResult {
   content: Record<string, unknown>;
 }
 
+export interface RemotePreferences {
+  profile_id: string;
+  theme: "light" | "dark" | "system";
+  default_model: string;
+  api_base_url: string;
+  updated_at: string | null;
+}
+
 // 所有 fetch 请求默认超时 30 秒
 async function get<T>(url: string): Promise<T> {
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), 30_000);
   try {
-    const r = await fetch(`${BASE}${url}`, { signal: controller.signal });
+    const r = await fetch(apiUrl(url), { signal: controller.signal });
     if (!r.ok) throw new Error(`${r.status}`);
     return r.json();
   } finally {
     clearTimeout(timeout);
   }
+}
+
+async function put<T>(url: string, body: unknown, baseUrl?: string): Promise<T> {
+  const r = await fetch(apiUrl(url, baseUrl), { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
+  if (!r.ok) throw new Error(`${r.status}`);
+  return r.json();
 }
 
 export const api = {
@@ -69,4 +90,7 @@ export const api = {
     get<{ data: { task_id: number; results: ReviewResult[]; total: number } }>(`/api/callback/batch/${taskId}`),
   getTaskStatus: (taskId: number) =>
     get<{ data: { taskId: number; status: string } }>(`/api/callback/task/status/${taskId}`),
+  getPreferences: (profileId: string) => get<RemotePreferences>(`/preferences/${encodeURIComponent(profileId)}`),
+  updatePreferences: (profileId: string, preferences: { theme: string; default_model: string; api_base_url: string }, currentBaseUrl?: string) =>
+    put<RemotePreferences>(`/preferences/${encodeURIComponent(profileId)}`, preferences, currentBaseUrl),
 };
