@@ -23,9 +23,7 @@ def test_bash_runs_project_python_script(tmp_path, monkeypatch):
     script.write_text("print('hello from script')", encoding="utf-8")
     command = f"{shlex.quote(sys.executable)} {shlex.quote(str(script))}"
 
-    result = json.loads(
-        bash.invoke({"command": command, "working_directory": str(tmp_path)})
-    )
+    result = json.loads(bash.invoke({"command": command, "working_directory": str(tmp_path)}))
 
     assert result["success"] is True
     assert result["exit_code"] == 0
@@ -41,11 +39,7 @@ def test_bash_rejects_working_directory_outside_allowed_roots(tmp_path, monkeypa
     outside.mkdir()
     _configure(monkeypatch, allowed)
 
-    result = json.loads(
-        bash.invoke(
-            {"command": "python missing.py", "working_directory": str(outside)}
-        )
-    )
+    result = json.loads(bash.invoke({"command": "python missing.py", "working_directory": str(outside)}))
 
     assert result["success"] is False
     assert "PermissionError" in result["error"]
@@ -113,9 +107,7 @@ def test_bash_rejects_command_outside_allowlist(tmp_path, monkeypatch):
 
     _configure(monkeypatch, tmp_path)
 
-    result = json.loads(
-        bash.invoke({"command": "git status", "working_directory": str(tmp_path)})
-    )
+    result = json.loads(bash.invoke({"command": "git status", "working_directory": str(tmp_path)}))
 
     assert result["success"] is False
     assert "不在白名单" in result["error"]
@@ -127,9 +119,7 @@ def test_bash_allows_ls_and_find(tmp_path, monkeypatch):
     _configure(monkeypatch, tmp_path)
     (tmp_path / "sample.txt").write_text("sample", encoding="utf-8")
 
-    ls_result = json.loads(
-        bash.invoke({"command": "ls -1 .", "working_directory": str(tmp_path)})
-    )
+    ls_result = json.loads(bash.invoke({"command": "ls -1 .", "working_directory": str(tmp_path)}))
     find_result = json.loads(
         bash.invoke(
             {
@@ -150,11 +140,7 @@ def test_bash_rejects_dangerous_find_actions(tmp_path, monkeypatch):
 
     _configure(monkeypatch, tmp_path)
 
-    result = json.loads(
-        bash.invoke(
-            {"command": "find . -delete", "working_directory": str(tmp_path)}
-        )
-    )
+    result = json.loads(bash.invoke({"command": "find . -delete", "working_directory": str(tmp_path)}))
 
     assert result["success"] is False
     assert "禁止 find 选项" in result["error"]
@@ -211,7 +197,7 @@ def test_bash_is_registered():
     assert "bash" in tool_map()
 
 
-def test_knowledge_graph_skill_resolves_three_tools():
+def test_knowledge_graph_skill_resolves_all_declared_tools():
     from agent_platform.skills.registry import DeclarativeSkillRegistry
     from agent_platform.tools import register_all_declarative_tools
     from agent_platform.tools.registry import tool_map
@@ -220,5 +206,5 @@ def test_knowledge_graph_skill_resolves_three_tools():
     skill = DeclarativeSkillRegistry().load("knowledge-graph-extraction")
     resolved = [name for name in skill.tools if name in tool_map()]
 
-    assert skill.tools == ["read_file", "write_file", "bash"]
-    assert resolved == ["read_file", "write_file", "bash"]
+    assert skill.tools == ["read_file", "write_file", "edit_file", "bash"]
+    assert resolved == ["read_file", "write_file", "edit_file", "bash"]

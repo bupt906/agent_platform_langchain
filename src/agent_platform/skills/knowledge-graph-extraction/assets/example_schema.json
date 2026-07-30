@@ -6,18 +6,21 @@
     { "type": "Person", "description": "A named individual human." },
     { "type": "Organization", "description": "A company, agency, institution, or formal group." },
     { "type": "Location", "description": "A place: city, country, region, address, or facility." },
+    { "type": "Time", "description": "A source-stated date, time, or interval." },
     { "type": "Product", "description": "A named product, service, system, or work." },
-    { "type": "Event", "description": "A discrete happening with a name or clear identity (deal, launch, incident)." },
+    { "type": "Event", "kind": "event", "required_roles": ["has_participant"], "description": "A discrete, source-grounded occurrence. Replace this generic type with domain-specific event types and semantic roles." },
     { "type": "Concept", "description": "A defined idea, method, or topic that is a subject of discussion." }
   ],
   "relationship_types": [
     { "type": "employed_by", "description": "Person works or worked for the organization.", "source_types": ["Person"], "target_types": ["Organization"], "symmetric": false },
-    { "type": "located_in", "description": "Entity is situated in a place.", "source_types": ["Person", "Organization", "Event"], "target_types": ["Location"], "symmetric": false },
+    { "type": "located_in", "relation_kind": "entity_relation", "description": "Entity is stably situated in a place.", "source_types": ["Person", "Organization"], "target_types": ["Location"], "symmetric": false },
     { "type": "part_of", "description": "Source is a component or member of target.", "source_types": ["Organization", "Product", "Concept"], "target_types": ["Organization", "Product", "Concept"], "symmetric": false },
-    { "type": "acquired", "description": "Source acquired target.", "source_types": ["Organization"], "target_types": ["Organization", "Product"], "symmetric": false },
     { "type": "partnered_with", "description": "Two organizations in a stated partnership.", "source_types": ["Organization"], "target_types": ["Organization"], "symmetric": true },
     { "type": "produced", "description": "Organization or person created the product/work.", "source_types": ["Organization", "Person"], "target_types": ["Product"], "symmetric": false },
-    { "type": "participated_in", "description": "Entity took part in the event.", "source_types": ["Person", "Organization"], "target_types": ["Event"], "symmetric": false },
+    { "type": "has_participant", "relation_kind": "event_role", "description": "Event has a stated participant. Replace with event-specific semantic roles when possible.", "source_types": ["Event"], "target_types": ["Person", "Organization", "Product"], "symmetric": false },
+    { "type": "occurred_in", "relation_kind": "event_role", "description": "Event occurred at the stated location.", "source_types": ["Event"], "target_types": ["Location"], "symmetric": false },
+    { "type": "occurred_on", "relation_kind": "event_role", "description": "Event occurred at the stated time.", "source_types": ["Event"], "target_types": ["Time"], "symmetric": false },
+    { "type": "caused", "relation_kind": "event_relation", "description": "Source event caused the target event.", "source_types": ["Event"], "target_types": ["Event"], "symmetric": false },
     { "type": "related_to", "description": "Last-resort generic link; FLAG for review and replace with a specific type whenever possible.", "source_types": [], "target_types": [], "symmetric": true }
   ]
 }

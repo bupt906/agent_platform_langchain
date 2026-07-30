@@ -8,8 +8,8 @@ from agent_platform.core.router import (
     RouterDecision,
     _build_invoke_config,
     _build_router_prompt,
-    resolve_route,
 )
+from agent_platform.skills.registry import DeclarativeSkillRegistry
 
 
 class TestRouterDecision:
@@ -53,6 +53,17 @@ class TestBuildRouterPrompt:
     async def test_prompt_includes_all_skills(self, deps):
         prompt = _build_router_prompt(deps)
         assert "document_review" in prompt
+
+    @pytest.mark.asyncio
+    async def test_prompt_includes_declarative_skills_and_tools(self, deps):
+        deps.declarative_registry = DeclarativeSkillRegistry()
+
+        prompt = _build_router_prompt(deps)
+
+        assert "knowledge-graph-extraction" in prompt
+        assert "声明式 Skill" in prompt
+        assert "read_file" in prompt
+        assert "bash" in prompt
 
     @pytest.mark.asyncio
     async def test_prompt_includes_routing_rules(self, deps):

@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import json
 import logging
-from collections.abc import Iterator
+from collections.abc import AsyncIterator, Iterator
 from collections.abc import Mapping
 from dataclasses import replace
 from typing import Any
@@ -28,6 +28,42 @@ router = APIRouter()
 
 def _get_deps(request: Request) -> PlatformDeps:
     return request.app.state.deps
+
+
+def _resolve_single_target(
+    deps: PlatformDeps,
+    skill_name: str,
+    explicit_mode: str = "",
+) -> tuple[Any | None, Any | None, str]:
+    """解析单路由目标；显式或自动路由到未知 Skill 时立即报错。"""
+    if explicit_mode == "agent":
+        skill = deps.skill_registry.get(skill_name)
+        if not skill:
+            available = ", ".join(deps.skill_registry.skill_names()) or "无"
+            raise ValueError(f"Python Agent '{skill_name}' 不存在；可用 Agent: {available}")
+        return skill, None, "agent"
+
+    if explicit_mode == "skill":
+        declarative = deps.declarative_registry.get(skill_name) if deps.declarative_registry else None
+        if not declarative:
+            available = (
+                ", ".join(s.name for s in deps.declarative_registry.list_skills())
+                if deps.declarative_registry
+                else "无"
+            )
+            raise ValueError(f"声明式 Skill '{skill_name}' 不存在；可用 Skill: {available}")
+        return None, declarative, "skill"
+
+    skill = deps.skill_registry.get(skill_name)
+    if skill:
+        return skill, None, "agent"
+    declarative = deps.declarative_registry.get(skill_name) if deps.declarative_registry else None
+    if declarative:
+        return None, declarative, "skill"
+    if skill_name == "general":
+        return None, None, "general"
+
+    raise ValueError(f"自动路由选择了未注册的 Skill '{skill_name}'")
 
 
 # ── 同步对话 ────────────────────────────────────────────────────
@@ -98,6 +134,8 @@ async def chat_stream(request: Request, body: ChatRequest) -> EventSourceRespons
             deps,
             model_provider=deps.model_provider.with_thinking(body.thinking),
         )
+        model_info = stream_deps.model_provider.describe_model(body.model)
+        yield _sse("model_info", type="model_info", **model_info)
 
         # ── 显式指定 agent / skill / 自动路由 ──
         explicit_mode = ""
@@ -112,11 +150,19 @@ async def chat_stream(request: Request, body: ChatRequest) -> EventSourceRespons
         else:
             decision = await resolve_route(body.message, deps, model_id=body.model)
             skill_name = decision.skill_name
-            yield _sse("routing", type="routing", skill=skill_name, mode=decision.mode, confidence=decision.confidence)
 
         # ── 多 Agent 编排流式 ──
         is_multi = decision and decision.mode == "multi" and decision.execution_plan
         if is_multi:
+            yield _sse(
+                "routing",
+                type="routing",
+                source="auto",
+                target_type="multi",
+                skill="multi_agent",
+                mode=decision.mode,
+                confidence=decision.confidence,
+            )
             plan = decision.execution_plan
             yield _sse("plan", type="plan", mode=plan.mode, subtasks=[s.model_dump() for s in plan.subtasks])
 
@@ -128,19 +174,35 @@ async def chat_stream(request: Request, body: ChatRequest) -> EventSourceRespons
             return
 
         # ── 单技能 / 通用流式 ──
-        skill = deps.skill_registry.get(skill_name) if explicit_mode != "skill" else None
-        declarative = (
-            deps.declarative_registry.get(skill_name)
-            if explicit_mode != "agent" and deps.declarative_registry
-            else None
+        skill, declarative, target_type = _resolve_single_target(
+            deps,
+            skill_name,
+            explicit_mode,
+        )
+        declarative_tools = []
+        if declarative:
+            from agent_platform.skills.builder import resolve_skill_tools
+            from agent_platform.tools.registry import tool_map
+
+            declarative_tools = resolve_skill_tools(declarative, tool_map())
+        yield _sse(
+            "routing",
+            type="routing",
+            source="explicit" if explicit_mode else "auto",
+            target_type=target_type,
+            skill=skill_name,
+            mode=decision.mode if decision else "single",
+            confidence=decision.confidence if decision else 1.0,
+            tools=[tool.name for tool in declarative_tools],
         )
 
         if not skill and not declarative:
             # 通用对话
             model = stream_deps.model_provider.get_model(body.model)
+            identity = stream_deps.model_provider.model_identity_instruction(body.model)
             async for chunk in model.astream(
                 [
-                    SystemMessage(content="你是一个通用智能助手，尽力回答用户的问题。"),
+                    SystemMessage(content=(f"你是一个通用智能助手，尽力回答用户的问题。\n\n{identity}")),
                     HumanMessage(content=body.message),
                 ]
             ):
@@ -157,14 +219,11 @@ async def chat_stream(request: Request, body: ChatRequest) -> EventSourceRespons
                 build_skill_agent,
                 recursion_limit_for_tool_calls,
             )
-            from agent_platform.tools.registry import tool_map as get_tool_map
 
             model = stream_deps.model_provider.get_model(body.model)
             from agent_platform.config.settings import settings as _settings
-            max_calls = _settings.declarative_skills_max_tool_calls
 
-            tm = get_tool_map()
-            tools = [tm[t] for t in declarative.tools if t in tm]
+            max_calls = _settings.declarative_skills_max_tool_calls
 
             from uuid import uuid4
 
@@ -173,7 +232,12 @@ async def chat_stream(request: Request, body: ChatRequest) -> EventSourceRespons
                 "recursion_limit": recursion_limit_for_tool_calls(max_calls),
             }
             agent = build_skill_agent(
-                model, declarative, tools, max_tool_calls=max_calls, session_id=body.session_id or ""
+                model,
+                declarative,
+                declarative_tools,
+                max_tool_calls=max_calls,
+                session_id=body.session_id or "",
+                model_identity=stream_deps.model_provider.model_identity_instruction(body.model),
             )
 
             try:
@@ -239,10 +303,26 @@ async def chat_stream(request: Request, body: ChatRequest) -> EventSourceRespons
 
         yield _sse("done", type="done", skill=skill_name)
 
-    return EventSourceResponse(event_generator())
+    return EventSourceResponse(_guard_sse_stream(event_generator()))
 
 
 # ── SSE 辅助 ────────────────────────────────────────────────────
+
+
+async def _guard_sse_stream(
+    events: AsyncIterator[dict[str, Any]],
+) -> AsyncIterator[dict[str, Any]]:
+    """把未捕获的流式异常转换成客户端可见的 error 事件。"""
+    try:
+        async for event in events:
+            yield event
+    except Exception as exc:
+        logger.exception("聊天 SSE 流异常终止")
+        yield _sse(
+            "error",
+            type="error",
+            error=f"{type(exc).__name__}: {exc}",
+        )
 
 
 def _chunk_deltas(chunk: Any) -> Iterator[tuple[str, str]]:
@@ -269,10 +349,7 @@ def _compact_tool_value(value: Any, *, depth: int = 0) -> Any:
         return f"{value[:300]}… <{len(value)} chars>"
     if isinstance(value, Mapping):
         items = list(value.items())
-        compact = {
-            str(key): _compact_tool_value(item, depth=depth + 1)
-            for key, item in items[:30]
-        }
+        compact = {str(key): _compact_tool_value(item, depth=depth + 1) for key, item in items[:30]}
         if len(items) > 30:
             compact["<omitted>"] = f"{len(items) - 30} fields"
         return compact
@@ -328,12 +405,16 @@ def _model_end_data(event: Mapping[str, Any]) -> dict[str, Any]:
     metadata = getattr(output, "response_metadata", {}) or {}
     tool_calls = getattr(output, "tool_calls", []) or []
     invalid_tool_calls = getattr(output, "invalid_tool_calls", []) or []
-    return {
+    result = {
         "type": "model_end",
         "finish_reason": metadata.get("finish_reason", "unknown"),
         "tool_calls": len(tool_calls),
         "invalid_tool_calls": len(invalid_tool_calls),
     }
+    reported_model = metadata.get("model_name") or metadata.get("model")
+    if reported_model:
+        result["reported_model"] = reported_model
+    return result
 
 
 def _sse(event: str, **data) -> dict:

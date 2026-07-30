@@ -2,9 +2,66 @@
 
 This is the pass that lets the graph be trusted. Extraction proposes; validation
 disposes. Run it as **maximal rigor**: examine every node and every edge, not a
-sample. In the chunk-first workflow there are three gates: a local chunk review,
-an incremental fusion review, and a final structural check
-(`scripts/validate_graph.py`). Do all three; they catch different defects.
+sample. In the chunk-first workflow there are four gates: schema lineage, local
+chunk review, incremental fusion review, and final structural validation. Do all
+four; a correct-looking final graph does not excuse a broken process.
+
+## Contents
+
+- Gate 0 — Schema lineage and context isolation
+- Gate 1 — Local chunk review
+- Gate 2 — Incremental fusion review
+- Gate 3 — Structural validation
+- When to stop
+
+## Gate 0 — Schema lineage and context isolation
+
+Run this gate before reviewing the current chunk's entities. Treat any failure
+as a hard error.
+
+### Context audit
+
+- Confirm the semantic agent received only allowed seed chunks during seed
+  design.
+- Confirm it received only the current chunk packet during schema fit.
+- Confirm no later non-seed chunk was opened, searched, summarized, or supplied
+  in the same model context.
+- If future text was visible, invalidate the run and restart. Do not accept a
+  promise that the model ignored information already in context.
+
+### Seed audit
+
+- `schema_seed.json` is immutable and has revision 0.
+- Inferred seed types carry exact `evidence_quote` and `source_chunks`.
+- Seed provenance cites only the first manifest chunk of each document.
+- No seed type is justified solely by evidence from a later chunk.
+- A supplied ontology is explicitly marked `schema_origin: user_supplied`.
+
+### Delta audit
+
+For the current chunk, check its delta before extraction:
+
+- `schema_revision_before` equals the previous schema revision.
+- `fit_check` covers every important entity kind and asserted predicate.
+- Each mapped item points to a type that existed before the delta.
+- Each addition/remap has an exact evidence quote in the current chunk.
+- `affected_chunks` identifies earlier outputs that the change may repair.
+- An empty delta has `decision: no_change`, no unmapped items, and explicit
+  mapping reasons. Empty arrays alone are invalid.
+
+### Replay invariant
+
+Reconstruct the current type set mentally or from the audit files and verify:
+
+`current schema = immutable seed + approved deltas in manifest order`
+
+Compare `schema.json`, every processed delta, and `schema_history.json`. Any type
+without a seed/delta introduction, any skipped revision, or any full-schema
+replacement invalidates the run even when `graph.json` is structurally valid.
+
+Record Gate 0 results in the validation report under `schema_lineage`, including
+the current chunk id, before/after revision, additions/remaps, evidence locality,
+empty-delta justification, and context-isolation result.
 
 ## Gate 1 — Local chunk review
 
@@ -34,6 +91,9 @@ Write `kg_output/chunks/<chunk_id>.review.json` with:
   meaningful subjects can be dropped to reduce noise.
 - **Fusion-safe?** If it matches a prior entity, is the alias/coreference
   evidence strong enough? If not, keep separate and add an unresolved mention.
+- **Event identity sound?** For an event entity, does its controlled label use
+  only source-stated dimensions, and is it distinct from repeated occurrences
+  with different time, place, sequence, participants, or status?
 
 ### Review every relationship
 
@@ -51,6 +111,21 @@ specific, non-redundant, not over-inferred. For each edge, explicitly ask:
 5. *Does this contradict another edge?* If so, go to conflict resolution.
 6. *Does this need a schema delta?* If no relationship type fits, propose a
    schema change before forcing a bad relation.
+
+For event-rich chunks, also review the complete event structure:
+
+7. *Should this be a direct edge or an event?* Stable two-party facts stay direct;
+   qualified occurrences with reusable identity use an event node and role edges.
+8. *Are event roles directed consistently?* Every `event_role` edge must point
+   from the event to its argument, regardless of active or passive wording.
+9. *Are required roles covered?* Compare outgoing roles with the event type's
+   `required_roles`. Record missing source-unstated roles as unresolved; never
+   manufacture them.
+10. *Is actuality preserved?* Planned, cancelled, hypothetical, negated, and
+    uncertain events must not be presented as completed occurrences.
+11. *Was the same fact stored twice?* Drop a direct entity-to-entity projection
+    when the event-role structure already represents it, unless the schema marks
+    the projection as intentionally derived.
 
 ### Language consistency
 
@@ -78,6 +153,11 @@ Review every fusion decision:
   new type, evidence, and affected chunks.
 - **Relationship remap:** schema changed and an earlier edge now has a more
   precise type. Record the old and new type.
+- **Event merge:** merge mentions only when event type, semantic participants,
+  time, place, sequence, and status are compatible. Union complementary roles and
+  evidence; do not collapse repeated events.
+- **Event split:** split a previously fused event when a later chunk establishes
+  distinct times, places, sequences, participants, or statuses.
 - **Keep both:** contradictory or time-scoped claims are both source-backed.
   Record why both remain.
 - **Drop:** item fails grounding, schema, direction, or endpoint checks.
@@ -110,7 +190,7 @@ and the validation report should make these auditable.
 After assembling `graph.json` (Phase 7), run:
 
 ```bash
-python src/agent_platform/skills/knowledge-graph-extraction/scripts/validate_graph.py kg_output/graph.json --schema kg_output/schema.json --report kg_output/validation_report.json
+python scripts/validate_graph.py kg_output/graph.json --schema kg_output/schema.json --report kg_output/validation_report.json
 ```
 
 It reports, split into **errors** (must fix) and **warnings** (review):
@@ -128,6 +208,12 @@ It reports, split into **errors** (must fix) and **warnings** (review):
 - **Self-loop** (warning): source == target. Occasionally valid; usually noise.
 - **Orphan node** (warning): a node with no edges. Fine if it's a meaningful
   entity; consider dropping if it's incidental.
+- **Invalid event schema** (error): an event role points in the wrong schema
+  direction, an event-to-event relation allows non-event endpoint types, or an
+  event type names a required role absent from the relationship schema.
+- **Incomplete event roles** (warning): an event instance lacks one or more
+  schema-declared `required_roles`. Resolve the role when evidence exists; keep
+  the warning when the source genuinely omits it.
 
 Treat every **error** as a must-fix and iterate: fix the underlying extraction or
 schema, re-assemble, re-validate, until the error list is empty. Warnings are
@@ -140,9 +226,11 @@ the structural validator can still produce a graph.
 
 ## When to stop
 
-The graph is done when: the structural validator returns no errors; every
-remaining warning has been reviewed and either resolved or knowingly accepted;
-`conflicts.json` and `unresolved_mentions.json` contain only consciously accepted
-items; and a spot-check of a handful of random edges shows each is genuinely
-supported by its evidence. At that point the graph is small enough to be
+The graph is done when: schema lineage passes for every processed chunk; the
+seed and all deltas have valid local evidence; the structural validator returns
+no errors; every remaining warning has been reviewed and either resolved or
+knowingly accepted; `conflicts.json` and `unresolved_mentions.json` contain only
+consciously accepted items; and a spot-check of a handful of random edges shows
+each is genuinely supported by its evidence. At that point the graph is small
+enough to be
 wrong-free and rich enough to be useful — which is the goal.

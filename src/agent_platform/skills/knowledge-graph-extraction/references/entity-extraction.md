@@ -1,20 +1,42 @@
 # Sub-skill: Entity Extraction
 
 An entity is a real, identifiable thing the document is about — a person, an
-organization, a place, a defined concept, a method. Your job is to find the ones
-that matter and name them consistently. Quality here compounds: clean entities
-make relationships and merging far easier.
+organization, a place, a defined concept, a method, or an identifiable event
+occurrence. Your job is to find the ones that matter and name them consistently.
+Quality here compounds: clean entities make relationships and merging far easier.
 
 The most important rule is **surface-form grounding**: entity names must come
 from the text you are extracting from. Do not use domain knowledge, common sense,
 or a "better" standard term to name an entity that the chunk itself does not
 name.
 
+## Contents
+
+- Mandatory precondition
+- What qualifies as an entity
+- Event entities and naming
+- Record format
+- Prose and table handling
+- Language, normalization, and aliasing
+- Cross-chunk fusion and unresolved mentions
+- Coordinated phrases, tables, and lists
+- Gleaning, anti-patterns, and self-check
+- Output
+
+## Mandatory precondition
+
+Do not begin entity extraction until the current chunk's schema fit check and
+delta exist, the delta has been applied to `schema.json`, and the change is
+recorded in `schema_history.json`. If an important candidate still does not fit
+the applied schema, stop extraction and return to schema design; never continue
+under a type inferred from future text or a silently replaced full schema.
+
 In the chunk-first workflow, extract from the current chunk plus only the small
-context packet supplied by the manifest: adjacent overlap when needed, the
-current schema, compact `entity_index.json`, and relevant unresolved mentions.
-The entity index helps recognize known aliases; it is not a license to add an
-entity that the current chunk does not name or clearly refer to.
+context packet supplied by the manifest: overlap already embedded in the current
+chunk, the current schema, compact `entity_index.json`, and relevant unresolved
+mentions. Do not open the next chunk to obtain more overlap. The entity index
+helps recognize known aliases; it is not a license to add an entity that the
+current chunk does not name or clearly refer to.
 
 ## What qualifies as an entity
 
@@ -28,15 +50,50 @@ A candidate is a good entity when **all** of these hold:
   named entity referred to by a pronoun/coreference after its introduction. Do
   not infer it from outside knowledge.
 - **Its name is text-backed.** The chosen `name` must appear in the cited
-  `source_chunks` exactly or be directly assembled from an explicit source
-  surface form. If you cannot point to the words that justify the name, drop the
-  candidate or rename it to the source wording.
+  `source_chunks` exactly or be directly assembled from explicit source surface
+  forms. The controlled event-label rule below is the only case where several
+  grounded fields may be combined into one canonical label. If you cannot point
+  to the words that justify the name, drop the candidate or rename it to the
+  source wording.
 - **It is salient.** It matters to the document's content. Skip boilerplate
   (page numbers, "Figure 1", "the authors" generically, headers/footers) unless
   such a thing is genuinely a subject of discussion.
 - **It has a stable identity.** You could point to it again later and know it's
   the same thing. Pronouns and one-off paraphrases are not entities; the thing
   they refer to is.
+
+## Event entities and controlled naming
+
+Extract an event as an entity during Phase 4 when the current schema marks its
+type with `kind: event` and the chunk asserts an identifiable occurrence. Event
+entities are required before Phase 5 can attach participant, time, place, cause,
+result, and other role edges.
+
+Prefer an explicit source name or nominal mention such as "the North Ridge mine
+accident" or "the acquisition". When an event is expressed only by a predicate,
+create a controlled canonical label from source-stated dimensions:
+
+`<core participant> + <event type/trigger> + <core object> + <time if stated>`
+
+For example, "On 3 March 2024, Acme acquired Beta" may yield
+`Acme acquisition of Beta (3 March 2024)`. Every component must be present in the
+chunk; do not add inferred dates, places, participants, outcomes, or domain terms.
+This label is an identifier for a grounded occurrence, not a claim that the exact
+phrase appeared verbatim.
+
+An event candidate must satisfy all of these:
+
+- the text asserts, plans, denies, cancels, or otherwise discusses one occurrence;
+- its event type exists in the current schema;
+- it can be distinguished by trigger plus available participants, time, place,
+  sequence, or status;
+- it will receive at least one grounded role edge, or it is explicitly named and
+  central enough to remain meaningful while a role is unresolved.
+
+Do not create one event node per verb token. Repeated mentions of the same
+occurrence become aliases/evidence for one event. Repeated occurrences with
+different time, place, sequence, or status remain separate even when they share
+participants and type.
 
 ## Record format (per entity)
 
@@ -52,9 +109,9 @@ A candidate is a good entity when **all** of these hold:
 ```
 
 - **name** is the canonical source surface form. Pick the fullest form that
-  actually appears in the source chunks. Do **not** replace it with a more
-  standard, more general, or more domain-familiar term that is absent from the
-  text.
+  actually appears in the source chunks. The only exception is a controlled
+  event label assembled under the rule above. Do **not** replace a name with a
+  more standard, more general, or more domain-familiar term absent from the text.
 - **aliases** are other surface forms that appear in the source, plus safe
   punctuation/spacing/case variants. Do not put invented paraphrases or inferred
   names in `aliases`.
@@ -69,7 +126,9 @@ Before writing a record, run this grounding check:
 1. Can I find `name` in one of the cited `source_chunks`?
 2. If not, can I find an alias that appears in the chunk and justifies this
    canonical name without adding outside knowledge?
-3. If not, the entity is not grounded enough. Drop it or use the source wording
+3. For a reified event only, is every component of the controlled label explicitly
+   stated in the cited chunk and tied to the same occurrence?
+4. If not, the entity is not grounded enough. Drop it or use the source wording
    as `name`.
 
 ## Handle prose and tables separately during extraction
@@ -134,6 +193,12 @@ After each chunk, compare extracted entities with `kg_output/entity_index.json`:
   evidence that made it ambiguous.
 - **Type conflict:** do not overwrite the existing type. Add a conflict entry
   with both candidate types, supporting chunks, and the decision needed.
+
+For event entities, also maintain an `event_signature` in the entity index with
+the available event type, trigger/nominal mentions, semantic participants, time,
+location, sequence, and status. Merge event mentions only when these dimensions
+are compatible. Sparse but plausible matches belong in `unresolved_mentions.json`;
+conflicting or repeated occurrences stay separate.
 
 Only record an alias when the source backs it: acronym expansion, repeated
 surface forms, appositive naming, or unambiguous adjacent/coreference context.
@@ -277,7 +342,9 @@ did I miss?* First passes reliably skip:
 - the second and third items of a coordinated phrase ("A, B, and C"),
 - entities referred to only by pronoun after their introduction,
 - quantitative or technical entities (metrics, genes, statutes, dates that name a
-  specific event).
+  specific event),
+- event occurrences expressed by nominalizations or referred to across sentence
+  boundaries after their trigger.
 
 Add only genuine entities. Do not invent items to fill the pass — an empty
 gleaning result is a fine result.
@@ -287,15 +354,17 @@ missed source mentions, not for adding inferred domain concepts.
 
 ## Anti-patterns to avoid
 
-- **Verbs and adjectives as entities.** "growth", "innovative", "increased" are
-  not entities.
+- **Bare verbs and adjectives as entities.** "innovative" and an isolated
+  "increased" are not entities. A grounded occurrence expressed by a verb may be
+  reified only through the controlled event rule above.
 - **Plausible but absent names.** "high-lift pump" is not a valid entity if the
   source only says "submersible pump" and "slurry pump".
 - **Rewritten section titles.** Do not simplify or expand a source heading into a
   cleaner title that is not present in the source.
-- **Whole clauses as entities.** "the decision to expand into Europe" is an event
-  worth modeling *as an Event entity with a short name* ("European expansion"),
-  not a node whose name is a sentence.
+- **Whole clauses as entities.** "the decision to expand into Europe" may be an
+  event worth modeling, but use a short label assembled only from source-stated
+  dimensions; do not turn the complete clause into a node name or invent a
+  polished title absent from the source.
 - **Generic placeholders.** "the system", "the data", "the approach" with no
   specific referent. If a specific system/dataset/method is named, use that name.
 - **Document-structure artifacts.** "Section 3", "Table 2", "the appendix" —
@@ -326,6 +395,8 @@ Before writing the per-chunk JSON, review every entity:
 - Coordinated phrases have not been silently rewritten into absent names.
 - Cross-chunk aliases and coreferences are backed by current or adjacent text,
   not by a plausible memory of the document.
+- Event labels contain only source-stated identity dimensions, and repeated event
+  mentions were compared by participants, time, place, sequence, and status.
 - Ambiguous cross-chunk mentions are written to `unresolved_mentions.json`
   instead of becoming weak entities.
 - Low-confidence, hard-to-ground candidates are dropped rather than kept for

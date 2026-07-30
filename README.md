@@ -129,8 +129,9 @@ cp .env.example .env
 编辑 `.env`，至少填入一个模型的 API Key：
 
 ```env
-DEFAULT_MODEL=deepseek:deepseek-chat
-DEEPSEEK_API_KEY=sk-xxxxxxxxxxxxxxxx
+DEFAULT_MODEL=volcengine:ark-code-latest
+VOLCENGINE_API_KEY=xxxxxxxxxxxxxxxx
+VOLCENGINE_BASE_URL=https://ark.cn-beijing.volces.com/api/coding/v3
 ```
 
 ### 3. 启动服务
@@ -167,12 +168,18 @@ curl -N -X POST http://localhost:8000/chat/stream \
   -H "Content-Type: application/json" \
   -d '{"message": "帮我审查这份合同"}'
 
-# Python CLI（连续输出回复内容，不显示 SSE 帧换行）
+# Python CLI：无参数启动交互模式
+agent-chat
+
+# 交互中可用 /model、/agent、/skill、/thinking、/session、/status 等命令
+# 例如：/model deepseek:deepseek-v4-pro
+
+# 也可直接发送单条消息（连续输出回复内容，不显示 SSE 帧换行）
 agent-chat "帮我审查这份合同"
 
 # CLI 同样支持指定 Agent、Skill、模型和会话
 agent-chat --agent document_review --session-id demo "上个月销售额是多少？"
-agent-chat --skill knowledge-graph-extraction --model deepseek:deepseek-chat "从文档中抽取知识图谱"
+agent-chat --skill knowledge-graph-extraction --model volcengine:ark-code-latest "从文档中抽取知识图谱"
 
 # 查看所有 Agent 列表
 curl http://localhost:8000/skills
@@ -193,7 +200,9 @@ curl http://localhost:8000/hitl/approvals
 
 | 变量名 | 默认值 | 说明 |
 |--------|--------|------|
-| `DEFAULT_MODEL` | `deepseek:deepseek-chat` | 默认使用的模型，格式为 `提供商:模型名` |
+| `DEFAULT_MODEL` | `volcengine:ark-code-latest` | 默认使用的模型，格式为 `提供商:模型名` |
+| `VOLCENGINE_API_KEY` | (空) | 火山引擎方舟 Coding Plan API Key |
+| `VOLCENGINE_BASE_URL` | `https://ark.cn-beijing.volces.com/api/coding/v3` | Coding Plan 的 OpenAI 兼容 API 地址（使用 Responses API） |
 | `DEEPSEEK_API_KEY` | (空) | DeepSeek API 密钥 |
 | `DEEPSEEK_BASE_URL` | `https://api.deepseek.com/v1` | DeepSeek API 地址 |
 | `QWEN_API_KEY` | (空) | 通义千问 (DashScope) API 密钥 |
@@ -222,7 +231,7 @@ curl http://localhost:8000/hitl/approvals
 | `TOOL_TIMEOUT_SECONDS` | `30.0` | 单个工具调用超时秒数 |
 | `TOOL_RATE_LIMIT_PER_MINUTE` | `100` | 全局工具调用速率限制 |
 | `TOOL_BUDGET_MAX_CALLS` | `50` | 单次对话最大工具调用次数 |
-| `EMBEDDING_MODEL` | (空) | embedding 模型，格式 `provider:model`。DeepSeek 不支持 embedding，配此项可切换到 Qwen/OpenAI |
+| `EMBEDDING_MODEL` | (空) | embedding 模型，格式 `provider:model`。默认编码模型不用于 embedding，建议单独配置 Qwen/OpenAI 模型 |
 | `EMBEDDING_DIMENSIONS` | `1536` | 向量维度 |
 | `KB_VECTOR_TOP_K` | `5` | 向量检索返回条数 |
 | `KB_VECTOR_THRESHOLD` | `0.7` | 余弦距离阈值 |
@@ -230,7 +239,8 @@ curl http://localhost:8000/hitl/approvals
 | `HITL_APPROVAL_TIMEOUT` | `300` | 审批超时秒数 |
 
 **模型 ID 格式**：`提供商:模型名`，例如：
-- `deepseek:deepseek-chat` — DeepSeek 对话模型
+- `volcengine:ark-code-latest` — 火山引擎方舟 Coding Plan（控制台管理实际模型）
+- `deepseek:deepseek-v4-pro` — DeepSeek V4 Pro
 - `qwen:qwen-plus` — 通义千问 Plus
 - `openai:gpt-4o` — OpenAI GPT-4o
 - `ollama:llama3` — 本地 Ollama 模型
@@ -248,7 +258,7 @@ curl http://localhost:8000/hitl/approvals
   "message": "用户问题",
   "agent": "document_review",                 // 可选，指定 Python Agent（agents/ 目录）；省略则自动路由
   "skill": "knowledge-graph-extraction", // 可选，指定声明式 Skill（skills/ 目录）；省略则自动路由
-  "model": "deepseek:deepseek-chat", // 可选，指定模型；省略使用默认模型
+  "model": "volcengine:ark-code-latest", // 可选，指定模型；省略使用默认模型
   "session_id": "abc123"         // 可选，会话 ID，用于多轮对话记忆
 }
 ```
@@ -666,7 +676,7 @@ prefs = await deps.user_profile_store.get_profile(session_id)
 
 - 会话 ID、技能、模型
 - 用户消息与助手回复
-- Token 用量（prompt / completion / total）— 自动从 LLM 响应中提取，支持 DeepSeek/OpenAI/Qwen
+- Token 用量（prompt / completion / total）— 自动从 LLM 响应中提取，支持火山引擎/DeepSeek/OpenAI/Qwen
 - 执行耗时
 - 路由置信度
 - 异常信息

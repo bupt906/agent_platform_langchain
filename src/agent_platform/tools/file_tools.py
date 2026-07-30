@@ -232,8 +232,99 @@ def write_file(
         )
 
 
+@tool
+def edit_file(
+    file_path: str,
+    old_string: str,
+    new_string: str,
+    replace_all: bool = False,
+    encoding: str = "auto",
+) -> str:
+    """精确替换允许目录内文本文件的内容，并以 JSON 返回编辑结果。
+
+    Args:
+        file_path: 目标文件路径。相对路径以服务进程的当前工作目录为基准。
+        old_string: 要查找的原始文本，不能为空。
+        new_string: 用于替换的新文本；传入空字符串可删除原始文本。
+        replace_all: 是否替换所有匹配项，默认 false。为 false 时 old_string 必须只出现一次。
+        encoding: auto、utf-8-sig、utf-8 或 gb18030，默认自动识别并保留原编码。
+    """
+    from agent_platform.config.settings import settings
+
+    try:
+        if not old_string:
+            raise ValueError("old_string 不能为空")
+        if "\x00" in old_string or "\x00" in new_string:
+            raise ValueError("old_string 和 new_string 不能包含 NUL 字符")
+
+        path = _resolve_allowed_path(
+            file_path,
+            settings.file_write_allowed_roots,
+            "写入",
+        )
+        _ensure_path_in_allowed_roots(
+            path,
+            settings.file_read_allowed_roots,
+            "读取",
+        )
+        if not path.exists():
+            raise FileNotFoundError(f"文件不存在: {file_path}")
+        if not path.is_file():
+            raise ValueError(f"路径不是文件: {file_path}")
+        if path.suffix.lower() not in TEXT_SUFFIXES:
+            supported = ", ".join(sorted(TEXT_SUFFIXES))
+            raise ValueError(f"不支持的文件类型 '{path.suffix}'。支持: {supported}")
+
+        size = path.stat().st_size
+        if size > settings.file_read_max_bytes:
+            raise ValueError(
+                f"文件过大: {size} bytes，最大允许 {settings.file_read_max_bytes} bytes"
+            )
+
+        raw = path.read_bytes()
+        if b"\x00" in raw:
+            raise ValueError("文件包含 NUL 字节，可能不是文本文件")
+        text, detected_encoding = _decode_text(raw, encoding)
+
+        matches = text.count(old_string)
+        if matches == 0:
+            raise ValueError("未找到 old_string，文件未修改")
+        if matches > 1 and not replace_all:
+            raise ValueError(
+                f"old_string 在文件中出现 {matches} 次；请提供更精确的文本，"
+                "或设置 replace_all=true"
+            )
+
+        occurrences = matches if replace_all else 1
+        edited = text.replace(old_string, new_string, -1 if replace_all else 1)
+        payload = edited.encode(detected_encoding)
+        if len(payload) > settings.file_write_max_bytes:
+            raise ValueError(
+                f"编辑后内容过大: {len(payload)} bytes，最大允许 "
+                f"{settings.file_write_max_bytes} bytes"
+            )
+
+        path.write_bytes(payload)
+        return _result(
+            success=True,
+            path=str(path),
+            encoding=detected_encoding,
+            occurrences=occurrences,
+            chars_before=len(text),
+            chars_after=len(edited),
+            bytes_written=len(payload),
+        )
+    except Exception as exc:
+        return _result(
+            success=False,
+            error=f"{type(exc).__name__}: {exc}",
+            file_path=file_path,
+        )
+
+
 def register_file_tools() -> None:
     from agent_platform.tools.registry import register
 
     register(read_file)
     register(write_file)
+    register(edit_file)

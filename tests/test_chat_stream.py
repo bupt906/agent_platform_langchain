@@ -1,19 +1,76 @@
 from __future__ import annotations
 
+import json
+
+import pytest
 from langchain_core.messages import AIMessageChunk
 
 from agent_platform.api.routes.chat import (
     _chunk_deltas,
+    _guard_sse_stream,
     _model_end_data,
+    _resolve_single_target,
     _tool_event_data,
 )
 from agent_platform.api.schemas import ChatRequest
+from agent_platform.skills.registry import DeclarativeSkillRegistry
 
 
 def test_chat_request_disables_thinking_by_default() -> None:
     request = ChatRequest(message="测试")
 
     assert request.thinking is False
+
+
+@pytest.mark.asyncio
+async def test_resolve_single_target_finds_declarative_skill(deps) -> None:
+    deps.declarative_registry = DeclarativeSkillRegistry()
+
+    agent, skill, target_type = _resolve_single_target(
+        deps,
+        "knowledge-graph-extraction",
+    )
+
+    assert agent is None
+    assert skill is not None
+    assert skill.name == "knowledge-graph-extraction"
+    assert target_type == "skill"
+
+
+@pytest.mark.asyncio
+async def test_resolve_single_target_rejects_unknown_auto_route(deps) -> None:
+    deps.declarative_registry = DeclarativeSkillRegistry()
+
+    with pytest.raises(ValueError, match="未注册"):
+        _resolve_single_target(deps, "knowledge-graph-extractoin")
+
+
+@pytest.mark.asyncio
+async def test_resolve_single_target_rejects_unknown_explicit_skill(deps) -> None:
+    deps.declarative_registry = DeclarativeSkillRegistry()
+
+    with pytest.raises(ValueError, match="可用 Skill.*knowledge-graph-extraction"):
+        _resolve_single_target(
+            deps,
+            "missing-skill",
+            explicit_mode="skill",
+        )
+
+
+@pytest.mark.asyncio
+async def test_guard_sse_stream_surfaces_uncaught_errors() -> None:
+    async def broken_stream():
+        yield {"event": "delta", "data": '{"type":"delta","content":"部分"}'}
+        raise RuntimeError("upstream disconnected")
+
+    events = [event async for event in _guard_sse_stream(broken_stream())]
+
+    assert events[0]["event"] == "delta"
+    assert events[1]["event"] == "error"
+    assert json.loads(events[1]["data"]) == {
+        "type": "error",
+        "error": "RuntimeError: upstream disconnected",
+    }
 
 
 def test_chunk_deltas_separates_reasoning_and_answer() -> None:
@@ -77,9 +134,7 @@ def test_model_end_data_reports_stop_without_tool_calls() -> None:
         response_metadata={"finish_reason": "stop"},
     )
 
-    data = _model_end_data(
-        {"event": "on_chat_model_end", "data": {"output": output}}
-    )
+    data = _model_end_data({"event": "on_chat_model_end", "data": {"output": output}})
 
     assert data == {
         "type": "model_end",
@@ -87,3 +142,18 @@ def test_model_end_data_reports_stop_without_tool_calls() -> None:
         "tool_calls": 0,
         "invalid_tool_calls": 0,
     }
+
+
+def test_model_end_data_includes_upstream_model_metadata() -> None:
+    output = AIMessageChunk(
+        content="完成",
+        response_metadata={
+            "finish_reason": "stop",
+            "model_name": "deepseek-v4-pro",
+            "model_provider": "openai",
+        },
+    )
+
+    data = _model_end_data({"event": "on_chat_model_end", "data": {"output": output}})
+
+    assert data["reported_model"] == "deepseek-v4-pro"

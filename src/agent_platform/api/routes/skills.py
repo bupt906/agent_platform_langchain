@@ -4,6 +4,7 @@ from fastapi import APIRouter, Request
 
 from agent_platform.api.schemas import SkillInfoResponse, SkillListResponse
 from agent_platform.core.deps import PlatformDeps
+from agent_platform.tools.registry import tool_map
 
 router = APIRouter()
 
@@ -22,7 +23,23 @@ async def list_skills(request: Request) -> SkillListResponse:
             description=s.description,
             examples=s.examples,
             dependencies=s.dependencies,
+            kind="agent",
         )
         for s in skills
     ]
+    if deps.declarative_registry:
+        registered_tools = tool_map()
+        items.extend(
+            SkillInfoResponse(
+                name=skill.name,
+                description=skill.description,
+                examples=[],
+                dependencies=[],
+                kind="skill",
+                tools=skill.tools,
+                ready=all(name in registered_tools for name in skill.tools),
+                missing_tools=[name for name in skill.tools if name not in registered_tools],
+            )
+            for skill in deps.declarative_registry.list_skills()
+        )
     return SkillListResponse(skills=items, total=len(items))

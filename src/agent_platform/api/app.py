@@ -23,15 +23,15 @@ from agent_platform.core.deps import PlatformDeps
 from agent_platform.core.registry import SkillRegistry
 from agent_platform.memory import ConversationSummarizer, SessionStore, UserProfileStore
 from agent_platform.models.provider import ModelProvider
+from agent_platform.skills.builder import resolve_skill_tools
+from agent_platform.tools.registry import tool_map
 
 logger = logging.getLogger(__name__)
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI) -> AsyncIterator[None]:
-    logging.basicConfig(
-        level=getattr(logging, settings.log_level.upper(), logging.INFO)
-    )
+    logging.basicConfig(level=getattr(logging, settings.log_level.upper(), logging.INFO))
 
     model_provider = ModelProvider(settings)
     skill_registry = SkillRegistry()
@@ -61,9 +61,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     # ── 知识库加载（向量 RAG）──
     from agent_platform.knowledge_bases.registry import KnowledgeBaseRegistry
 
-    kb_registry = KnowledgeBaseRegistry(
-        db_path=settings.memory_db_path, dimensions=settings.embedding_dimensions
-    )
+    kb_registry = KnowledgeBaseRegistry(db_path=settings.memory_db_path, dimensions=settings.embedding_dimensions)
     kb_dir = Path(__file__).parent.parent / "knowledge_bases"
     await kb_registry.load_from_dir(kb_dir, model_provider=model_provider)
     logger.info("知识库加载完成，共 %d 个（已向量化）", kb_registry.count)
@@ -71,6 +69,14 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     # ── 声明式 Skills 加载 ──
     register_all_declarative_tools()
     declarative_registry = DeclarativeSkillRegistry()
+    registered_tools = tool_map()
+    for declarative_skill in declarative_registry.list_skills():
+        bound_tools = resolve_skill_tools(declarative_skill, registered_tools)
+        logger.info(
+            "声明式 Skill '%s' 工具绑定就绪: %s",
+            declarative_skill.name,
+            ", ".join(tool.name for tool in bound_tools) or "无",
+        )
     logger.info("声明式 Skills 加载完成，共 %d 个", declarative_registry.count)
 
     async with httpx.AsyncClient() as http_client:

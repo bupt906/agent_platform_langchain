@@ -39,6 +39,13 @@ PALETTE = ['#4C72B0', '#DD8452', '#55A868', '#C44E52', '#8172B2', '#937860',
 SHAPE_CYCLE = ['dot', 'triangle', 'square', 'diamond', 'star', 'hexagon',
                'triangleDown']
 
+# Minimum empty space between rendered node boundaries in precomputed layouts.
+# It is separate from visual size so the historical degree-based sizing stays
+# unchanged.
+NODE_GAP = 32
+LEVEL_GAP = 110
+COMPONENT_GAP = 180
+
 
 # ── Small helpers ──────────────────────────────────────────────────
 
@@ -137,63 +144,290 @@ def assign_styles(entities):
 
 # ── Layout precomputation ──────────────────────────────────────────
 
-def build_layouts(entities, relationships, ordered_types):
+def _degree_counts(entities, relationships):
+    degrees = {e['id']: 0 for e in entities}
+    for r in relationships:
+        if r.get('source') in degrees:
+            degrees[r['source']] += 1
+        if r.get('target') in degrees:
+            degrees[r['target']] += 1
+    return degrees
+
+
+def _node_size(degree):
+    """Keep the viewer's historical connection-count size rule."""
+    return min(10 + degree * 1.2, 42)
+
+
+def _ring_radius(ids, collision_radii, floor=0):
+    """Return a circle radius whose adjacent node boundaries cannot touch."""
+    n = len(ids)
+    if n <= 1:
+        return floor
+    widest = max(collision_radii[eid] for eid in ids)
+    min_chord = 2 * widest
+    return max(floor, min_chord / (2 * math.sin(math.pi / n)))
+
+
+def _on_ring(ids, radius, start=-math.pi / 2):
+    n = len(ids)
+    if not n:
+        return {}
+    if n == 1 and radius == 0:
+        return {ids[0]: [0, 0]}
+    return {
+        eid: [radius * math.cos(start + 2 * math.pi * i / n),
+              radius * math.sin(start + 2 * math.pi * i / n)]
+        for i, eid in enumerate(ids)
+    }
+
+
+def _grid_positions(ids, collision_radii):
+    """Pack nodes into a centered grid with size-aware rows and columns."""
+    if not ids:
+        return {}
+    cols = max(1, math.ceil(math.sqrt(len(ids) * 1.35)))
+    rows = math.ceil(len(ids) / cols)
+    col_r = [0] * cols
+    row_r = [0] * rows
+    for i, eid in enumerate(ids):
+        row, col = divmod(i, cols)
+        col_r[col] = max(col_r[col], collision_radii[eid])
+        row_r[row] = max(row_r[row], collision_radii[eid])
+
+    xs = [0]
+    for col in range(1, cols):
+        xs.append(xs[-1] + col_r[col - 1] + col_r[col])
+    ys = [0]
+    for row in range(1, rows):
+        ys.append(ys[-1] + row_r[row - 1] + row_r[row])
+    x_mid = ((xs[0] - col_r[0]) + (xs[-1] + col_r[-1])) / 2
+    y_mid = ((ys[0] - row_r[0]) + (ys[-1] + row_r[-1])) / 2
+    return {
+        eid: [xs[i % cols] - x_mid, ys[i // cols] - y_mid]
+        for i, eid in enumerate(ids)
+    }
+
+
+def _line_positions(ids, collision_radii):
+    """Place one hierarchy level on a centered, collision-free line."""
+    if not ids:
+        return {}
+    xs = [0]
+    for i in range(1, len(ids)):
+        xs.append(xs[-1] + collision_radii[ids[i - 1]] +
+                  collision_radii[ids[i]])
+    left = xs[0] - collision_radii[ids[0]]
+    right = xs[-1] + collision_radii[ids[-1]]
+    mid = (left + right) / 2
+    return {eid: xs[i] - mid for i, eid in enumerate(ids)}
+
+
+def _hierarchical_positions(entities, relationships, collision_radii,
+                            degrees):
+    """Build a deterministic layered layout, including cyclic components."""
+    ids = [e['id'] for e in entities]
+    order = {eid: i for i, eid in enumerate(ids)}
+    adjacency = {eid: set() for eid in ids}
+    indegree = {eid: 0 for eid in ids}
+    for r in relationships:
+        source, target = r.get('source'), r.get('target')
+        if source not in adjacency or target not in adjacency:
+            continue
+        adjacency[source].add(target)
+        adjacency[target].add(source)
+        if source != target:
+            indegree[target] += 1
+
+    components, unseen = [], set(ids)
+    while unseen:
+        seed = min(unseen, key=lambda eid: order[eid])
+        stack, component = [seed], []
+        unseen.remove(seed)
+        while stack:
+            eid = stack.pop()
+            component.append(eid)
+            for other in sorted(adjacency[eid], key=lambda x: order[x],
+                                reverse=True):
+                if other in unseen:
+                    unseen.remove(other)
+                    stack.append(other)
+        components.append(sorted(component, key=lambda eid: order[eid]))
+
+    layouts = []
+    for component in components:
+        roots = [eid for eid in component if indegree[eid] == 0]
+        if not roots:
+            roots = [max(component, key=lambda eid: (degrees[eid],
+                                                     -order[eid]))]
+        roots.sort(key=lambda eid: (-degrees[eid], order[eid]))
+        level = {eid: 0 for eid in roots}
+        queue = list(roots)
+        qi = 0
+        while qi < len(queue):
+            eid = queue[qi]
+            qi += 1
+            for other in sorted(adjacency[eid], key=lambda x: order[x]):
+                if other not in level:
+                    level[other] = level[eid] + 1
+                    queue.append(other)
+        for eid in component:
+            level.setdefault(eid, 0)
+
+        buckets = {}
+        for eid in component:
+            buckets.setdefault(level[eid], []).append(eid)
+        local = {}
+        previous_y = previous_r = 0
+        first = True
+        for li in sorted(buckets):
+            row = buckets[li]
+            row.sort(key=lambda eid: (-degrees[eid], order[eid]))
+            row_r = max(collision_radii[eid] for eid in row)
+            y = 0 if first else previous_y + previous_r + row_r + LEVEL_GAP
+            first = False
+            for eid, x in _line_positions(row, collision_radii).items():
+                local[eid] = [x, y]
+            previous_y, previous_r = y, row_r
+
+        min_x = min(local[eid][0] - collision_radii[eid]
+                    for eid in component)
+        max_x = max(local[eid][0] + collision_radii[eid]
+                    for eid in component)
+        layouts.append((local, component, min_x, max_x))
+
+    result, cursor = {}, 0
+    for local, component, min_x, max_x in layouts:
+        shift = cursor - min_x
+        for eid in component:
+            result[eid] = [local[eid][0] + shift, local[eid][1]]
+        cursor += max_x - min_x + COMPONENT_GAP
+    if result:
+        min_x = min(result[eid][0] - collision_radii[eid] for eid in result)
+        max_x = max(result[eid][0] + collision_radii[eid] for eid in result)
+        mid = (min_x + max_x) / 2
+        for point in result.values():
+            point[0] -= mid
+    return result
+
+
+def _edge_routes(relationships):
+    """Assign a distinct curve lane to every relationship edge."""
+    grouped = {}
+    for i, r in enumerate(relationships):
+        source, target = r['source'], r['target']
+        key = (source, target) if str(source) <= str(target) else (target, source)
+        grouped.setdefault(key, []).append(i)
+
+    routes = [None] * len(relationships)
+    for group_index, (key, edge_indexes) in enumerate(grouped.items()):
+        if key[0] == key[1]:
+            for lane, edge_index in enumerate(edge_indexes):
+                routes[edge_index] = {
+                    'smooth': {'enabled': False},
+                    'selfReference': {
+                        'size': 28 + lane * 14,
+                        'angle': (math.pi / 4 + lane * math.pi / 5) %
+                                 (2 * math.pi),
+                        'renderBehindTheNode': False,
+                    },
+                }
+            continue
+
+        for lane_index, edge_index in enumerate(edge_indexes):
+            if len(edge_indexes) == 1:
+                physical_lane = 1 if group_index % 2 else -1
+                roundness = 0.08 + 0.02 * (group_index % 3)
+            else:
+                magnitude = lane_index // 2 + 1
+                physical_lane = -magnitude if lane_index % 2 == 0 else magnitude
+                side_count = (len(edge_indexes) + 1) // 2
+                # Normalize into a useful curve range without capping: even
+                # very large parallel-edge groups keep a unique roundness.
+                roundness = 0.08 + 0.52 * magnitude / (side_count + 2)
+            r = relationships[edge_index]
+            oriented_lane = physical_lane if r['source'] == key[0] else -physical_lane
+            routes[edge_index] = {
+                'smooth': {
+                    'enabled': True,
+                    'type': 'curvedCW' if oriented_lane > 0 else 'curvedCCW',
+                    'roundness': roundness,
+                }
+            }
+    return routes
+
+
+def build_layouts(entities, relationships, ordered_types, node_sizes=None):
     by_type = {}
     for e in entities:
         by_type.setdefault(e['type'], []).append(e['id'])
-    total = max(len(entities), 1)
+    ids = [e['id'] for e in entities]
+    order = {eid: i for i, eid in enumerate(ids)}
+    degrees = _degree_counts(entities, relationships)
+    if node_sizes is None:
+        node_sizes = {eid: _node_size(degrees[eid]) for eid in ids}
+    # Treat half the desired gap as part of each collision radius. Pairwise
+    # separation can then be checked with radius_a + radius_b everywhere.
+    collision_radii = {eid: node_sizes[eid] + NODE_GAP / 2 for eid in ids}
 
-    degrees = {}
-    for r in relationships:
-        degrees[r['source']] = degrees.get(r['source'], 0) + 1
-        degrees[r['target']] = degrees.get(r['target'], 0) + 1
-    max_deg = max(degrees.values()) if degrees else 1
+    circular = _on_ring(ids,
+                        _ring_radius(ids, collision_radii, floor=260))
 
-    circular = {}
-    for i, e in enumerate(entities):
-        a = 2 * math.pi * i / total - math.pi / 2
-        circular[e['id']] = [400 * math.cos(a), 400 * math.sin(a)]
-
-    tc, ca = {}, -math.pi / 2
-    for t in ordered_types:
-        span = 2 * math.pi * len(by_type[t]) / total
-        n = max(len(by_type[t]), 1)
-        for i, eid in enumerate(by_type[t]):
-            a = ca + span * (i + 0.5) / n
-            tc[eid] = [400 * math.cos(a), 400 * math.sin(a)]
-        ca += span
+    type_ids = [eid for t in ordered_types for eid in by_type.get(t, [])]
+    tc = _on_ring(type_ids,
+                  _ring_radius(type_ids, collision_radii, floor=260))
 
     hubs = {}
-    if degrees:
-        hub_id = max(degrees, key=degrees.get)
+    if ids:
+        hub_id = max(ids, key=lambda eid: (degrees[eid], -order[eid]))
         hubs[hub_id] = [0, 0]
-        others = [e['id'] for e in entities if e['id'] != hub_id]
-        n_others = max(len(others), 1)
-        for i, eid in enumerate(others):
-            a = 2 * math.pi * i / n_others - math.pi / 2
-            r = 200 + 180 * (degrees.get(eid, 1) / max_deg)
-            hubs[eid] = [r * math.cos(a), r * math.sin(a)]
-    else:
-        hubs = dict(circular)
+        others = [eid for eid in ids if eid != hub_id]
+        if others:
+            outer_r = _ring_radius(others, collision_radii, floor=220)
+            outer_r = max(
+                outer_r,
+                collision_radii[hub_id] +
+                max(collision_radii[eid] for eid in others) + 120)
+            hubs.update(_on_ring(others, outer_r))
 
-    # Concentric: rings by type, ordered by frequency (language-agnostic).
+    # Concentric rings expand for both within-ring and cross-ring clearance.
     conc = {}
-    for ri, t in enumerate(ordered_types):
-        ids, rr = by_type[t], 100 + ri * 80
-        n = max(len(ids), 1)
-        for i, eid in enumerate(ids):
-            a = 2 * math.pi * i / n
-            conc[eid] = [rr * math.cos(a), rr * math.sin(a)]
+    previous_r = previous_max = 0
+    first_ring = True
+    for t in ordered_types:
+        ring_ids = by_type[t]
+        current_max = max(collision_radii[eid] for eid in ring_ids)
+        floor = 0 if first_ring and len(ring_ids) == 1 else 120
+        rr = _ring_radius(ring_ids, collision_radii, floor=floor)
+        if not first_ring:
+            rr = max(rr, previous_r + previous_max + current_max)
+        conc.update(_on_ring(ring_ids, rr, start=0))
+        previous_r, previous_max, first_ring = rr, current_max, False
 
-    grid, cols = {}, 5
-    for ti, t in enumerate(ordered_types):
-        for i, eid in enumerate(by_type[t]):
-            row = ti // 2
-            col = (ti % 2) * cols + (i % cols)
-            grid[eid] = [col * 160 - 500, row * 160 - 180]
+    grid = _grid_positions(type_ids, collision_radii)
+    hierarchical = _hierarchical_positions(
+        entities, relationships, collision_radii, degrees)
+
+    isolated = [eid for eid in ids if degrees[eid] == 0]
+    connected = [eid for eid in ids if degrees[eid] > 0]
+    force = _grid_positions(connected, collision_radii)
+    connected_outer = max(
+        (math.hypot(*force[eid]) + collision_radii[eid]
+         for eid in connected), default=0)
+    isolate_min_r = _ring_radius(isolated, collision_radii, floor=180)
+    if isolated and connected:
+        isolate_min_r = max(
+            isolate_min_r,
+            connected_outer + max(collision_radii[eid] for eid in isolated) +
+            2 * NODE_GAP)
+    force.update(_on_ring(isolated, isolate_min_r))
 
     return {'posCircular': circular, 'posTypeCirc': tc, 'posHub': hubs,
-            'posConc': conc, 'posGrid': grid}
+            'posConc': conc, 'posGrid': grid, 'posHier': hierarchical,
+            'posForce': force, 'isolatedIds': isolated,
+            'forceIsolateMinRadius': isolate_min_r,
+            'layoutGap': NODE_GAP,
+            'collisionRadii': collision_radii}
 
 
 # ── Data build ─────────────────────────────────────────────────────
@@ -203,15 +437,13 @@ def build_data(graph, lang):
     relationships = graph['relationships']
     counts, ordered, colors, shapes, borders = assign_styles(entities)
 
-    degrees = {}
-    for r in relationships:
-        degrees[r['source']] = degrees.get(r['source'], 0) + 1
-        degrees[r['target']] = degrees.get(r['target'], 0) + 1
+    degrees = _degree_counts(entities, relationships)
+    node_sizes = {e['id']: _node_size(degrees[e['id']]) for e in entities}
 
     nodes = []
     for e in entities:
         deg = degrees.get(e['id'], 0)
-        size = min(10 + deg * 1.2, 42)
+        size = node_sizes[e['id']]
         t = e['type']
         desc = _clean(e.get('description', ''))
         nodes.append(dict(
@@ -219,13 +451,14 @@ def build_data(graph, lang):
             title=_esc_html((desc[:150] + '…') if len(desc) > 150 else desc),
             color=colors.get(t, '#AAAAAA'), shape=shapes.get(t, 'dot'),
             size=size, font={'size': max(11, min(15, int(size / 2.0)))},
-            group=t, etype=t, deg=deg,
+            group=t, etype=t, deg=deg, isolated=(deg == 0),
             desc=desc, aliases=e.get('aliases', [])[:6],
             conf=e.get('confidence'), chunks=e.get('source_chunks', [])[:8],
         ))
 
     edges = []
-    for r in relationships:
+    routes = _edge_routes(relationships)
+    for edge_index, r in enumerate(relationships):
         ev = _clean(r.get('evidence', '') or r.get('description', ''))
         edges.append({
             'from': r['source'], 'to': r['target'], 'label': _clean(r['type']),
@@ -235,12 +468,13 @@ def build_data(graph, lang):
             'evidence': _clean(r.get('evidence', '')),
             'conf': r.get('confidence'),
             'chunks': r.get('source_chunks', [])[:8],
+            **routes[edge_index],
         })
 
     data = dict(nodes=nodes, edges=edges, typeColors=colors,
                 typeBorders=borders, typeShapes=shapes, typeCounts=counts,
                 orderedTypes=ordered, lang=lang)
-    data.update(build_layouts(entities, relationships, ordered))
+    data.update(build_layouts(entities, relationships, ordered, node_sizes))
     return data
 
 
@@ -333,16 +567,29 @@ function EFONT(){ return {size:10,color:'#9a9ac0',strokeWidth:3,strokeColor:'#1a
 function DIMFONT(){ return {size:10,color:'rgba(0,0,0,0)',strokeWidth:0,strokeColor:'#1a1a2e'}; }
 function HIFONT(){ return {size:11,color:'#cfd8ff',strokeWidth:3,strokeColor:'#1a1a2e'}; }
 
-var VN=D.nodes.map(function(n){return {id:n.id,label:n.label,title:n.title,color:n.color,shape:n.shape,size:n.size,font:n.font,group:n.group};});
-var VE=D.edges.map(function(e){return {id:e.id,from:e.from,to:e.to,label:edgeLabels?e.label:'',title:e.title,color:{color:'#5a5a7a',opacity:0.35},arrows:'to',font:EFONT()};});
+var VN=D.nodes.map(function(n){
+  var p=D.posForce[n.id]||[0,0];
+  return {id:n.id,label:n.label,title:n.title,color:n.color,shape:n.shape,
+    size:n.size,font:n.font,group:n.group,x:p[0],y:p[1],
+    mass:1+Math.min(n.deg,20)*0.08,
+    fixed:n.isolated?{x:true,y:true}:false};
+});
+var VE=D.edges.map(function(e){return {id:e.id,from:e.from,to:e.to,
+  label:edgeLabels?e.label:'',title:e.title,color:{color:'#5a5a7a',opacity:0.35},
+  arrows:'to',font:EFONT(),smooth:e.smooth,selfReference:e.selfReference};});
 var AN=new vis.DataSet(VN), AE=new vis.DataSet(VE);
 
-var PN={barnesHut:{gravitationalConstant:-2600,centralGravity:0.25,springLength:165,springConstant:0.03,damping:0.32}};
+var PN={barnesHut:{gravitationalConstant:-4200,centralGravity:0.18,
+  springLength:190,springConstant:0.025,damping:0.38,avoidOverlap:1},
+  minVelocity:0.2,stabilization:{enabled:true,iterations:900,
+  updateInterval:25,fit:false}};
 var GRP={}; Object.keys(D.typeColors).forEach(function(k){GRP[k]={color:{background:D.typeColors[k],border:D.typeBorders[k]||D.typeColors[k]}};});
 
 var network=new vis.Network(document.getElementById('net'),{nodes:AN,edges:AE},{
   physics:PN,
-  edges:{arrows:{to:{enabled:true,scaleFactor:0.4}},smooth:{type:'continuous'}},
+  nodes:{borderWidth:2},
+  edges:{arrows:{to:{enabled:true,scaleFactor:0.4}},smooth:false,
+    selectionWidth:2,hoverWidth:1.5},
   interaction:{hover:true,tooltipDelay:90,navigationButtons:true,keyboard:false},
   layout:{hierarchical:false}, groups:GRP
 });
@@ -393,13 +640,81 @@ sbox.addEventListener('input',function(){
 sbox.addEventListener('keydown',function(e){ if(e.key==='Enter'&&sr.firstChild){ sr.firstChild.click(); sbox.blur(); } });
 
 // ── Layout switching ──
-function AL(pm){ network.setOptions({physics:false,layout:{hierarchical:false}}); var ups=[]; AN.forEach(function(n){var p=pm?pm[n.id]:null; if(p)ups.push({id:n.id,x:p[0],y:p[1]});}); if(ups.length)AN.update(ups); network.fit({animation:false}); }
-function GP(v){ return {circular:D.posCircular,'type-circular':D.posTypeCirc,'hub-spoke':D.posHub,concentric:D.posConc,grid:D.posGrid}[v]||null; }
+function AL(pm){
+  network.setOptions({physics:false,layout:{hierarchical:false}});
+  var ups=[];
+  AN.forEach(function(n){var p=pm?pm[n.id]:null;
+    if(p)ups.push({id:n.id,x:p[0],y:p[1],fixed:false});
+  });
+  if(ups.length)AN.update(ups);
+  network.fit({animation:false});
+}
+function GP(v){ return {circular:D.posCircular,'type-circular':D.posTypeCirc,
+  'hub-spoke':D.posHub,concentric:D.posConc,grid:D.posGrid,
+  hierarchical:D.posHier}[v]||null; }
+function PFI(){
+  var ups=[];
+  D.nodes.forEach(function(n){var p=D.posForce[n.id]||[0,0];
+    ups.push({id:n.id,x:p[0],y:p[1],
+      fixed:n.isolated?{x:true,y:true}:false});
+  });
+  AN.update(ups);
+}
+function RNC(){
+  if(cv!=='force')return;
+  var active=D.nodes.filter(function(n){return !n.isolated;}),pos=network.getPositions();
+  for(var pass=0;pass<10;pass++){
+    var moved=false;
+    for(var i=0;i<active.length;i++)for(var j=i+1;j<active.length;j++){
+      var a=active[i],b=active[j],pa=pos[a.id],pb=pos[b.id];
+      if(!pa||!pb)continue;
+      var dx=pb.x-pa.x,dy=pb.y-pa.y,dist=Math.hypot(dx,dy);
+      var need=(D.collisionRadii[a.id]||a.size)+(D.collisionRadii[b.id]||b.size);
+      if(dist+0.1>=need)continue;
+      if(dist<0.001){var ang=((i+1)*37+(j+1)*17)%360*Math.PI/180;
+        dx=Math.cos(ang);dy=Math.sin(ang);dist=1;
+      }
+      var push=(need-dist)/2+0.5,ux=dx/dist,uy=dy/dist;
+      pa.x-=ux*push;pa.y-=uy*push;pb.x+=ux*push;pb.y+=uy*push;moved=true;
+    }
+    if(!moved)break;
+  }
+  var ups=[];active.forEach(function(n){var p=pos[n.id];if(p)ups.push({id:n.id,x:p.x,y:p.y});});
+  if(ups.length)AN.update(ups);
+}
+function POI(){
+  if(cv!=='force'||!D.isolatedIds.length)return;
+  var pos=network.getPositions(), connected=D.nodes.filter(function(n){return !n.isolated;});
+  var cx=0,cy=0,body=0;
+  if(connected.length){
+    var minx=Infinity,maxx=-Infinity,miny=Infinity,maxy=-Infinity;
+    connected.forEach(function(n){var p=pos[n.id]||{x:0,y:0},r=D.collisionRadii[n.id]||n.size;
+      minx=Math.min(minx,p.x-r);maxx=Math.max(maxx,p.x+r);
+      miny=Math.min(miny,p.y-r);maxy=Math.max(maxy,p.y+r);
+    });
+    cx=(minx+maxx)/2;cy=(miny+maxy)/2;
+    connected.forEach(function(n){var p=pos[n.id]||{x:0,y:0},r=D.collisionRadii[n.id]||n.size;
+      body=Math.max(body,Math.hypot(p.x-cx,p.y-cy)+r);
+    });
+  }
+  var maxIso=0;
+  D.isolatedIds.forEach(function(id){maxIso=Math.max(maxIso,D.collisionRadii[id]||10);});
+  var rr=Math.max(D.forceIsolateMinRadius,body+maxIso+2*D.layoutGap);
+  var ups=[],count=D.isolatedIds.length;
+  D.isolatedIds.forEach(function(id,i){var a=-Math.PI/2+2*Math.PI*i/count;
+    ups.push({id:id,x:cx+rr*Math.cos(a),y:cy+rr*Math.sin(a),
+      fixed:{x:true,y:true}});
+  });
+  AN.update(ups);
+}
 function SV(v){
   cv=v;
-  if(v==='force'){ network.setOptions({layout:{hierarchical:false},physics:lk?false:PN}); network.fit({animation:true}); }
-  else if(v==='hierarchical'){ network.setOptions({physics:false,layout:{hierarchical:{enabled:true,direction:'UD',sortMethod:'directed',nodeSpacing:180,levelSeparation:250}}}); network.fit({animation:{duration:400}}); }
-  else { AL(GP(v)); }
+  if(v==='force'){
+    PFI();
+    network.setOptions({layout:{hierarchical:false},physics:lk?false:PN});
+    if(!lk)network.stabilize(900);
+    network.fit({animation:true});
+  } else { AL(GP(v)); }
   document.getElementById('vs').value=v;
 }
 document.getElementById('vs').addEventListener('change',function(){SV(this.value);});
@@ -497,8 +812,12 @@ document.getElementById('be').textContent=edgeLabels?T.edgeOn:T.edgeOff;
 document.getElementById('bk').addEventListener('click',BACK);
 document.getElementById('dpx').addEventListener('click',function(){ try{network.unselectAll();}catch(err){} CS(); });
 
-network.on('stabilizationIterationsDone',function(){ document.getElementById('load').classList.add('hidden'); network.fit({animation:true}); });
-setTimeout(function(){ document.getElementById('load').classList.add('hidden'); }, 5000);
+network.on('stabilizationIterationsDone',function(){
+  network.stopSimulation(); RNC(); POI(); network.stopSimulation();
+  document.getElementById('load').classList.add('hidden');
+  network.fit({animation:true});
+});
+setTimeout(function(){ network.stopSimulation(); RNC(); POI(); network.stopSimulation(); document.getElementById('load').classList.add('hidden'); }, 5000);
 """
 
 HTML_TEMPLATE = """\

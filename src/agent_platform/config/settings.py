@@ -10,6 +10,9 @@ class ModelConfig(BaseSettings):
     openai_api_key: str = ""
     openai_base_url: str = "https://api.openai.com/v1"
 
+    volcengine_api_key: str = ""
+    volcengine_base_url: str = "https://ark.cn-beijing.volces.com/api/coding/v3"
+
     deepseek_api_key: str = ""
     deepseek_base_url: str = "https://api.deepseek.com/v1"
 
@@ -22,7 +25,7 @@ class ModelConfig(BaseSettings):
 
 
 class Settings(BaseSettings):
-    default_model: str = "deepseek:deepseek-chat"
+    default_model: str = "volcengine:ark-code-latest"
     mcp_config_path: Path = Path("mcp_config.json")
     log_level: str = "INFO"
     api_host: str = "0.0.0.0"
@@ -92,7 +95,7 @@ class Settings(BaseSettings):
 
     # ── 向量 RAG ──
     embedding_model: str = ""  # embedding 模型（空=复用 default_model 同 provider 的 embedding）
-    embedding_dimensions: int = 1536  # 向量维度（deepseek=1536, qwen=1024）
+    embedding_dimensions: int = 1536  # 向量维度（OpenAI=1536, Qwen=1024）
     kb_vector_top_k: int = 5  # 向量检索 top-k
     kb_vector_threshold: float = 0.7  # 余弦距离阈值（0=完全匹配，2=相反，默认0.7）
 

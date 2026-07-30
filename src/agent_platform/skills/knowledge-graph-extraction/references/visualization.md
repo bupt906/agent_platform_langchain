@@ -8,7 +8,7 @@ user wants to *see* the graph.
 ## Quick start
 
 ```bash
-python src/agent_platform/skills/knowledge-graph-extraction/scripts/generate_viewer.py kg_output/graph.json --out kg_output/graph.html
+python3 scripts/generate_viewer.py kg_output/graph.json --out kg_output/graph.html
 ```
 
 The output is one self-contained HTML file (loads vis-network 9.x from CDN; works
@@ -47,6 +47,15 @@ The viewer is **language-agnostic** and matches the graph's language automatical
 
 - **7 layouts** via dropdown or the `V` key: force-directed (default), circular,
   type-arc, hub-spoke, concentric rings, grid, hierarchical.
+- **Size-aware node spacing in every layout**: precomputed views expand with
+  graph size and reserve a boundary gap from each node's rendered radius. The
+  force view combines `avoidOverlap` physics with a final collision-resolution
+  pass, so dense long-document graphs do not collapse into node piles.
+- **Separated relationship lanes**: every edge gets a deterministic curved
+  route; parallel/opposite-direction edges between the same entity pair use
+  separate lanes, and repeated self-loops use different radii and angles.
+- **Isolated nodes stay outside the connected graph in force view**: zero-degree
+  nodes are placed and pinned on a size-aware outer ring after stabilization.
 - **Search**: `Ctrl/⌘+K` focuses the box; typing lists matches; **Enter jumps to
   the first match**; clicking a result focuses and previews that node.
 - **Type filter that doubles as a legend** — each row shows the type colour, name,
@@ -75,10 +84,17 @@ The viewer is **language-agnostic** and matches the graph's language automatical
 - `network.setPositions()` was removed in 9.x. Positions are set via
   `DataSet.update({id, x, y})` while `physics:false`, which is what the static
   layouts do.
-- The five static layouts are precomputed in Python (`build_layouts()`) and
+- The six static layouts are precomputed in Python (`build_layouts()`) and
   embedded as `D.posCircular`, `D.posTypeCirc`, `D.posHub`, `D.posConc`,
-  `D.posGrid`. Static layouts keep physics disabled so they don't collapse back
-  to force-directed; re-enable physics by switching to the force view.
+  `D.posGrid`, and `D.posHier`. Their radii, rows, columns, hierarchy levels,
+  and component gaps are calculated from each node's degree-based visual size.
+  Static layouts keep physics disabled so they don't collapse back to
+  force-directed; re-enable physics by switching to the force view.
+- Force initialization is embedded as `D.posForce`. Zero-degree entities are
+  pinned on its outer ring; after stabilization the ring is recomputed around
+  the connected graph's actual bounding radius.
+- Per-edge `smooth` / `selfReference` options are precomputed so relationship
+  curves remain separated in both physics and static layouts.
 - Edge-label dimming is done by updating each edge's `font` (transparent colour,
   zero stroke) alongside its `color`/`width` — vis-network has no separate
   label-opacity control, so the font itself must be updated or labels stay bright.
@@ -91,7 +107,10 @@ The viewer is **language-agnostic** and matches the graph's language automatical
 - Colours/shapes: `KNOWN_COLORS`, `KNOWN_SHAPES` (per-type overrides) and the
   `PALETTE` / `SHAPE_CYCLE` fallbacks in `scripts/generate_viewer.py`.
 - Dense threshold: `DENSE = D.edges.length>60` in the embedded JS.
-- Physics: `PN` in the embedded JS.
+- Layout clearance: `NODE_GAP`, `LEVEL_GAP`, and `COMPONENT_GAP` in
+  `scripts/generate_viewer.py`.
+- Physics and final force-layout collision pass: `PN` and `RNC()` in the
+  embedded JS.
 - Localization: add a language branch in `ui_strings()` and extend
   `resolve_lang()` if you need a UI beyond en/zh.
 
@@ -102,6 +121,8 @@ Open the HTML and confirm:
 1. It loads with a force-directed layout in a couple of seconds (the loading
    spinner disappears when stabilized).
 2. All 7 views switch without console errors, and edges are visibly connected.
+   Confirm node shapes retain a visible gap at high entity counts, parallel
+   relationships follow different curves, and self-loops use different arcs.
 3. Clicking a node fills the bottom-left knowledge preview and dims everything
    outside its neighbourhood — **including edge labels**; no bright labels should
    float over dimmed regions.
@@ -111,3 +132,5 @@ Open the HTML and confirm:
 7. For a non-English graph, labels and UI appear in the document's language.
 8. For a graph with >60 edges, edge labels start hidden and the toggle button
    reads "Show edge labels" (or its localized equivalent).
+9. In force-directed view, every zero-degree node sits outside the connected
+   graph and isolated nodes do not overlap one another.
