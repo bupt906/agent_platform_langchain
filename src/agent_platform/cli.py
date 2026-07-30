@@ -1,3 +1,5 @@
+"""Command-line client for the Agent Platform chat API."""
+
 from __future__ import annotations
 
 import argparse
