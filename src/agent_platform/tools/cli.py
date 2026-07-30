@@ -15,7 +15,6 @@ from httpx_sse import connect_sse
 
 from agent_platform.config.settings import settings
 
-
 DEFAULT_STREAM_URL = f"http://{settings.api_host}:{settings.api_port}/chat/stream"
 CONTENT_EVENT_TYPES = {"delta", "synthesis_delta"}
 MODEL_PRESETS = tuple(

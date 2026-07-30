@@ -3,27 +3,27 @@ from __future__ import annotations
 import logging
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
-from pathlib import Path
 
 import aiosqlite
 import httpx
 from fastapi import FastAPI
+from fastapi.middleware.cors import CORSMiddleware
 from langgraph.checkpoint.sqlite.aio import AsyncSqliteSaver
 
-from agent_platform.skills.registry import DeclarativeSkillRegistry
-from agent_platform.tools import register_all_declarative_tools
 from agent_platform.api.middleware import (
     AuthMiddleware,
     ObservabilityMiddleware,
     RateLimitMiddleware,
 )
-from agent_platform.api.routes import audit, callback, chat, hitl, review, skills
+from agent_platform.api.routes import audit, callback, chat, hitl, preferences, review, skills
 from agent_platform.config.settings import settings
 from agent_platform.core.deps import PlatformDeps
 from agent_platform.core.registry import SkillRegistry
 from agent_platform.memory import ConversationSummarizer, SessionStore, UserProfileStore
 from agent_platform.models.provider import ModelProvider
 from agent_platform.skills.builder import resolve_skill_tools
+from agent_platform.skills.registry import DeclarativeSkillRegistry
+from agent_platform.tools import register_all_declarative_tools
 from agent_platform.tools.registry import tool_map
 
 logger = logging.getLogger(__name__)
@@ -39,14 +39,15 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
 
     # ── 持久化存储初始化 ──
     memory_db = await aiosqlite.connect(settings.memory_db_path)
+    await memory_db.execute("PRAGMA journal_mode=WAL")
     audit_db = await aiosqlite.connect(settings.audit_db_path)
+    await audit_db.execute("PRAGMA journal_mode=WAL")
 
     session_store = SessionStore(memory_db)
     user_profile_store = UserProfileStore(memory_db)
     summarizer = ConversationSummarizer(model_provider)
-    # AsyncSqliteSaver 用 aiosqlite 连接，支持异步操作
-    _cp_db = await aiosqlite.connect(settings.memory_db_path)
-    checkpointer = AsyncSqliteSaver(_cp_db)
+    # AsyncSqliteSaver 复用同一个 memory_db 连接，避免多连接竞争
+    checkpointer = AsyncSqliteSaver(memory_db)
 
     from agent_platform.audit.store import AuditStore
 
@@ -57,14 +58,6 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
 
     approval_db = await aiosqlite.connect(settings.audit_db_path)
     approval_store = ApprovalStore(approval_db)
-
-    # ── 知识库加载（向量 RAG）──
-    from agent_platform.knowledge_bases.registry import KnowledgeBaseRegistry
-
-    kb_registry = KnowledgeBaseRegistry(db_path=settings.memory_db_path, dimensions=settings.embedding_dimensions)
-    kb_dir = Path(__file__).parent.parent / "knowledge_bases"
-    await kb_registry.load_from_dir(kb_dir, model_provider=model_provider)
-    logger.info("知识库加载完成，共 %d 个（已向量化）", kb_registry.count)
 
     # ── 声明式 Skills 加载 ──
     register_all_declarative_tools()
@@ -79,7 +72,13 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         )
     logger.info("声明式 Skills 加载完成，共 %d 个", declarative_registry.count)
 
-    async with httpx.AsyncClient() as http_client:
+    async with httpx.AsyncClient(proxy=None) as http_client:
+        # ── 外部知识库客户端（万悟平台 hit 检索接口）──
+        from agent_platform.agents.document_review.knowledge_bases.client import KnowledgeHitClient
+
+        kb_client = KnowledgeHitClient(http_client, settings)
+        logger.info("外部知识库客户端初始化完成: %s", settings.kb_api_base_url)
+
         deps = PlatformDeps(
             model_provider=model_provider,
             skill_registry=skill_registry,
@@ -91,11 +90,16 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
             audit_store=audit_store,
             approval_store=approval_store,
             declarative_registry=declarative_registry,
-            kb_registry=kb_registry,
+            kb_client=kb_client,
         )
         deps._callback_base = settings.callback_base_url
         app.state.deps = deps
         app.state.settings = settings
+
+        # 注入 document_review 技能依赖（聊天路径的 review_document 工具需要 kb_client）
+        from agent_platform.agents.document_review import skill as document_review_skill
+
+        document_review_skill.set_deps(deps)
 
         logger.info(
             "智能体中台启动完成，已注册agent: %s",
@@ -106,8 +110,6 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     await memory_db.close()
     await audit_db.close()
     await approval_db.close()
-    await _cp_db.close()
-    kb_registry.vector_store.close()
 
 
 app = FastAPI(
@@ -118,6 +120,15 @@ app = FastAPI(
 )
 
 # ── 中间件注册（顺序：外→内） ──────────────────────────────
+
+# 0. CORS 跨域（最外层，必须在所有中间件之前）
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],  # 生产环境应限制为前端域名
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 
 # 1. 可观测性（最外层，统计完整耗时）
 app.add_middleware(ObservabilityMiddleware)
@@ -136,6 +147,7 @@ app.include_router(audit.router)
 app.include_router(hitl.router)
 app.include_router(review.router)
 app.include_router(callback.router)
+app.include_router(preferences.router)
 
 
 @app.get("/favicon.ico")

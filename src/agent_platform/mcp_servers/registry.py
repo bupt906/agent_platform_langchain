@@ -28,6 +28,11 @@ def load_mcp_config(config_path: Path) -> list[dict[str, Any]]:
     return enabled
 
 
+# ── 客户端生命周期管理 ─────────────────────────────────────
+
+_mcp_client: object | None = None  # 保持 MultiServerMCPClient 实例存活
+
+
 async def load_mcp_tools(config_path: Path) -> list:
     """从配置中加载所有已启用 MCP 服务器的工具。
 
@@ -35,7 +40,12 @@ async def load_mcp_tools(config_path: Path) -> list:
     转换为 LangChain BaseTool 实例。
 
     返回 LangChain 工具列表。如果 langchain-mcp-adapters 未安装则返回空列表。
+
+    注意：返回的工具依赖保持存活的 MCP 客户端连接。调用 invalidate_mcp_cache()
+    或 shutdown_mcp() 来关闭连接。
     """
+    global _mcp_client
+
     configs = load_mcp_config(config_path)
     if not configs:
         return []
@@ -67,12 +77,32 @@ async def load_mcp_tools(config_path: Path) -> list:
     if not server_params:
         return []
 
-    tools = []
-    async with MultiServerMCPClient(server_params) as client:
-        tools = client.get_tools()
-        logger.info("从 MCP 服务器加载了 %d 个工具", len(tools))
+    # 关闭旧客户端（若有）
+    if _mcp_client is not None:
+        try:
+            await _mcp_client.__aexit__(None, None, None)
+        except Exception:
+            pass
+
+    client = MultiServerMCPClient(server_params)
+    await client.__aenter__()
+    _mcp_client = client
+    tools = client.get_tools()
+    logger.info("从 MCP 服务器加载了 %d 个工具", len(tools))
 
     return tools
+
+
+async def shutdown_mcp() -> None:
+    """关闭 MCP 客户端连接。"""
+    global _mcp_client
+    if _mcp_client is not None:
+        try:
+            await _mcp_client.__aexit__(None, None, None)
+        except Exception:
+            pass
+        _mcp_client = None
+        logger.info("MCP 客户端已关闭")
 
 
 # ── 缓存（动态重载用） ─────────────────────────────────────
@@ -123,9 +153,10 @@ async def load_mcp_tools_dynamic(
     return tools
 
 
-def invalidate_mcp_cache(config_path: Path | None = None) -> None:
-    """使 MCP 工具缓存失效。如果不传 config_path 则清空全部缓存。"""
+async def invalidate_mcp_cache(config_path: Path | None = None) -> None:
+    """使 MCP 工具缓存失效并关闭连接。如果不传 config_path 则清空全部缓存。"""
     if config_path:
         _mcp_tool_cache.pop(str(config_path.absolute()), None)
     else:
         _mcp_tool_cache.clear()
+    await shutdown_mcp()

@@ -17,6 +17,7 @@ async def list_audit_records(
     request: Request,
     session_id: str | None = None,
     skill: str | None = None,
+    skill_used: str | None = None,
     limit: int = 100,
     offset: int = 0,
 ):
@@ -24,8 +25,9 @@ async def list_audit_records(
     store = _get_audit_store(request)
     if not store:
         return {"records": [], "total": 0}
-    records = await store.query(session_id=session_id, skill=skill, limit=limit, offset=offset)
-    return {"records": records, "total": len(records)}
+    skill_filter = skill or skill_used  # 兼容前端两种参数名
+    records, total = await store.query_with_count(session_id=session_id, skill=skill_filter, limit=limit, offset=offset)
+    return {"records": records, "total": total}
 
 
 @router.get("/stats")

@@ -82,20 +82,21 @@ class ApprovalStore:
         )
         await self._db.commit()
 
-    async def list_pending(self, session_id: str | None = None) -> list[dict[str, Any]]:
+    async def list_pending(self, session_id: str | None = None, limit: int = 50, offset: int = 0) -> list[dict[str, Any]]:
         """列出待审批的请求。"""
         await self._ensure_tables()
+        keys = ["id", "session_id", "thread_id", "node_id", "skill_name", "operation", "details", "created_at", "status", "decided_by", "decided_at"]
         if session_id:
             cursor = await self._db.execute(
-                "SELECT * FROM approval_requests WHERE status = 'pending' AND session_id = ? ORDER BY created_at DESC",
-                (session_id,),
+                "SELECT * FROM approval_requests WHERE status = 'pending' AND session_id = ? ORDER BY created_at DESC LIMIT ? OFFSET ?",
+                (session_id, limit, offset),
             )
         else:
             cursor = await self._db.execute(
-                "SELECT * FROM approval_requests WHERE status = 'pending' ORDER BY created_at DESC LIMIT 50"
+                "SELECT * FROM approval_requests WHERE status = 'pending' ORDER BY created_at DESC LIMIT ? OFFSET ?",
+                (limit, offset),
             )
         rows = await cursor.fetchall()
-        keys = ["id", "session_id", "thread_id", "node_id", "skill_name", "operation", "details", "created_at", "status", "decided_by", "decided_at"]
         return [dict(zip(keys, row)) for row in rows]
 
     async def cleanup_expired(self, timeout_seconds: int = 300) -> int:

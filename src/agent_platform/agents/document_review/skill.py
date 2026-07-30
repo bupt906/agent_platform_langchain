@@ -28,6 +28,14 @@ SYSTEM_PROMPT = """\
 class DocumentReviewSkill(BaseSkill):
     """AI 文档审阅技能。"""
 
+    # 由 api/app.py lifespan 在构造 PlatformDeps 后注入到共享实例（模块尾部的 skill）
+    _deps = None
+
+    @classmethod
+    def set_deps(cls, deps) -> None:
+        """显式注入全局依赖，替代脆弱的属性赋值。"""
+        cls._deps = deps
+
     @property
     def name(self) -> str:
         return "document_review"
@@ -47,6 +55,16 @@ class DocumentReviewSkill(BaseSkill):
     def tool_config(self) -> dict:
         return {"timeout": 120.0, "parallel": False}
 
+    async def _run_review(self, file_path: str, kb_ids: str) -> str:
+        """执行审阅流水线，返回 JSON 字符串。独立成方法便于测试注入路径。"""
+        import json
+
+        kb_list = [k.strip() for k in kb_ids.split(",") if k.strip()]
+        from agent_platform.agents.document_review.pipeline import run_review_pipeline
+
+        result = await run_review_pipeline(file_path, kb_list, self._deps)
+        return json.dumps(result, ensure_ascii=False, indent=2)
+
     def create_agent(self, model_provider: ModelProvider, checkpointer=None) -> CompiledStateGraph:
         model = model_provider.get_model()
 
@@ -56,19 +74,12 @@ class DocumentReviewSkill(BaseSkill):
 
             Args:
                 file_path: 待审阅文件的完整路径（支持 txt/md/docx）
-                kb_ids: 知识库 ID 列表，逗号分隔（如 "compliance,terminology"）
+                kb_ids: 万悟平台知识库 ID 列表，逗号分隔（如 "2003716670903816192,2003716670903816193"）
             """
-            import json
-
-            kb_list = [k.strip() for k in kb_ids.split(",") if k.strip()]
-            from agent_platform.agents.document_review.pipeline import run_review_pipeline
-
-            # deps 通过 create_agent 时注入到 tool 闭包中
-            result = await run_review_pipeline(file_path, kb_list, _deps)
-            return json.dumps(result, ensure_ascii=False, indent=2)
+            # 读取共享实例上的 _deps（由 app.py lifespan 注入），而非模块全局
+            return await self._run_review(file_path, kb_ids)
 
         return create_agent(model, [review_document], system_prompt=SYSTEM_PROMPT, checkpointer=checkpointer)
 
 
-_deps = None  # 由 router 在调用 compose/create_agent 前设置
 skill = DocumentReviewSkill()

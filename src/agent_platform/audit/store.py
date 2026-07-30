@@ -5,7 +5,6 @@
 
 from __future__ import annotations
 
-import json
 import logging
 from typing import Any
 
@@ -121,6 +120,12 @@ class AuditStore:
     async def query(self, session_id: str | None = None, skill: str | None = None, limit: int = 100, offset: int = 0) -> list[dict[str, Any]]:
         """按条件查询审计记录。"""
         await self._ensure_tables()
+        records, _ = await self.query_with_count(session_id=session_id, skill=skill, limit=limit, offset=offset)
+        return records
+
+    async def query_with_count(self, session_id: str | None = None, skill: str | None = None, limit: int = 100, offset: int = 0) -> tuple[list[dict[str, Any]], int]:
+        """按条件查询审计记录，同时返回符合条件的总数。"""
+        await self._ensure_tables()
         conditions = []
         params: list[Any] = []
 
@@ -132,12 +137,20 @@ class AuditStore:
             params.append(skill)
 
         where = "WHERE " + " AND ".join(conditions) if conditions else ""
-        sql = f"SELECT * FROM audit_log {where} ORDER BY timestamp DESC LIMIT ? OFFSET ?"
-        params.extend([limit, offset])
 
-        cursor = await self._db.execute(sql, tuple(params))
+        # 先查询总数
+        count_sql = f"SELECT COUNT(*) FROM audit_log {where}"
+        count_params = list(params)
+        cursor = await self._db.execute(count_sql, tuple(count_params))
+        count_row = await cursor.fetchone()
+        total = count_row[0] if count_row else 0
+
+        # 再查询分页数据
+        data_sql = f"SELECT * FROM audit_log {where} ORDER BY timestamp DESC LIMIT ? OFFSET ?"
+        data_params = list(params) + [limit, offset]
+        cursor = await self._db.execute(data_sql, tuple(data_params))
         rows = await cursor.fetchall()
-        return [_audit_row_to_dict(row) for row in rows]
+        return [_audit_row_to_dict(row) for row in rows], total
 
     async def query_tool_calls(self, audit_id: str) -> list[dict[str, Any]]:
         """查询某次 Audit 记录的工具调用链。"""
@@ -152,7 +165,7 @@ class AuditStore:
     async def aggregate_stats(self, days: int = 30) -> AuditStats:
         """获取最近 N 天的聚合统计。"""
         await self._ensure_tables()
-        from datetime import datetime, timezone, timedelta
+        from datetime import datetime, timedelta, timezone
 
         since = (datetime.now(timezone.utc) - timedelta(days=days)).isoformat()
 

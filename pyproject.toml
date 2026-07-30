@@ -17,7 +17,6 @@ dependencies = [
     "aiosqlite>=0.20.0",
     "langchain-deepseek>=1.1.0",
     "python-docx>=1.0.0",
-    "sqlite-vec>=0.1.0",
     "pyyaml>=6.0",
     "pydantic>=2.0.0",
     "pydantic-settings>=2.0.0",
@@ -28,7 +27,7 @@ dependencies = [
 ]
 
 [project.scripts]
-agent-chat = "agent_platform.cli:main"
+agent-chat = "agent_platform.tools.cli:main"
 
 [project.optional-dependencies]
 dev = [
@@ -46,3 +45,16 @@ testpaths = ["tests"]
 
 [tool.ruff]
 line-length = 120
+
+[tool.ruff.lint]
+select = [
+    "F",    # Pyflakes: 未使用的导入、未定义变量等
+    "E",    # Pycodestyle 错误
+    "W",    # Pycodestyle 警告
+    "B",    # Flake8-bugbear: 常见 bug 检测
+    "I",    # isort: 导入排序
+]
+ignore = [
+    "E501",  # 行过长（由 line-length 处理）
+    "B008",  # 函数参数默认值中调用函数（如 Field(default_factory=...)）
+]

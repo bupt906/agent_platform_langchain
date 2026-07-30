@@ -1,55 +1,27 @@
-"""AI 文档审阅模块测试 — 向量 RAG 版。"""
+"""AI 文档审阅模块测试 — 外部知识库（万悟 hit 接口）版。"""
 
 from __future__ import annotations
 
-import asyncio
-from pathlib import Path
+import json
 
 import pytest
 
+from agent_platform.agents.document_review.pipeline import (
+    ReviewPipeline,
+    _parse_llm_response,
+    run_review_pipeline,
+)
 from agent_platform.agents.document_review.tools import (
     format_kb_results_for_prompt,
     parse_document,
+    search_knowledge_bases,
     split_sentences,
 )
-from agent_platform.agents.document_review.pipeline import ReviewPipeline
-from agent_platform.knowledge_bases.registry import KnowledgeBase, KnowledgeBaseRegistry, SearchResult
-from agent_platform.knowledge_bases.vector_store import VectorStore
+from agent_platform.config.settings import Settings
+from agent_platform.agents.document_review.knowledge_bases.client import KBHit, KnowledgeHitClient
 
 
 # ── Fixtures ──────────────────────────────────────────────
-
-
-@pytest.fixture
-def kb_entries():
-    """预置 KB 条目数据。"""
-    return [
-        KnowledgeBase(
-            name="测试知识库",
-            description="用于测试",
-            kb_id="test_kb",
-            entries=[
-                {"标题": "条目 1", "规则": "必须使用法定计量单位", "来源": "GB 3100", "原文": "设备参数必须使用法定计量单位，如 MPa、kW、mm"},
-                {"标题": "条目 2", "规则": "禁止使用绝对化用语", "来源": "行业术语规范", "原文": "禁止使用\"绝对安全\"\"万无一失\"\"零风险\"等用语"},
-            ],
-        ),
-        KnowledgeBase(
-            name="合规知识库",
-            description="合规",
-            kb_id="compliance",
-            entries=[
-                {"标题": "条目 1", "规则": "必须取得安全生产许可证", "来源": "安全生产许可证条例"},
-            ],
-        ),
-    ]
-
-
-def make_registry_with_kbs(kb_entries: list[KnowledgeBase]) -> KnowledgeBaseRegistry:
-    """创建只含 KB 元数据（无向量存储）的注册中心。"""
-    reg = KnowledgeBaseRegistry()
-    for kb in kb_entries:
-        reg.register(kb)
-    return reg
 
 
 @pytest.fixture
@@ -64,6 +36,99 @@ def sample_md_file(tmp_path):
     path = tmp_path / "test_doc.md"
     path.write_text("# 安全方案\n\n本次采矿绝对安全。\n\n设备参数用英制单位。", encoding="utf-8")
     return str(path)
+
+
+class FakeResponse:
+    """模拟 httpx.Response。"""
+
+    def __init__(self, json_data: dict, status_code: int = 200):
+        self._json = json_data
+        self.status_code = status_code
+
+    @property
+    def text(self) -> str:
+        import json
+
+        return json.dumps(self._json, ensure_ascii=False)
+
+    def json(self) -> dict:
+        return self._json
+
+
+class FakeHTTPClient:
+    """模拟 httpx.AsyncClient，记录请求并按序返回预设响应。"""
+
+    def __init__(self, responses: list):
+        self._responses = list(responses)
+        self.requests: list[dict] = []
+
+    async def post(self, url, json=None, headers=None, timeout=None):
+        self.requests.append({"url": url, "json": json, "headers": headers})
+        resp = self._responses.pop(0)
+        if isinstance(resp, Exception):
+            raise resp
+        return resp
+
+
+def make_hit_response(hits: list[tuple[str, str, str, float]]) -> dict:
+    """构造 hit 接口响应。hits: [(knowledgeName, title, snippet, score), ...]"""
+    return {
+        "code": 0,
+        "msg": "",
+        "data": {
+            "searchList": [
+                {"title": t, "snippet": s, "knowledgeName": kn, "childContentList": [], "childScore": []}
+                for kn, t, s, _ in hits
+            ],
+            "score": [score for _, _, _, score in hits],
+            "useGraph": False,
+        },
+    }
+
+
+class FakeKBClient:
+    """模拟 KnowledgeHitClient。"""
+
+    def __init__(self, hits: list[KBHit] | None = None, error: Exception | None = None):
+        self._hits = hits or []
+        self._error = error
+        self.calls: list[tuple[list[str], str]] = []
+
+    async def hit(self, kb_ids: list[str], question: str, retries: int = 1) -> list[KBHit]:
+        self.calls.append((kb_ids, question))
+        if self._error:
+            raise self._error
+        return self._hits
+
+
+class FakeModel:
+    def __init__(self, content: str):
+        self._content = content
+
+    async def ainvoke(self, messages):
+        class R:
+            pass
+
+        r = R()
+        r.content = self._content
+        return r
+
+
+class FakeModelProvider:
+    def __init__(self, content: str = '{"has_issue": "否"}'):
+        self._content = content
+
+    def get_model(self, model_id=None):
+        return FakeModel(self._content)
+
+
+class FakeDeps:
+    def __init__(self, kb_client=None, model_provider=None):
+        self.kb_client = kb_client
+        self.model_provider = model_provider
+
+
+# ── 文档解析 ──────────────────────────────────────────────
 
 
 class TestDocumentParsing:
@@ -88,6 +153,9 @@ class TestDocumentParsing:
         path.write_text("fake pdf")
         with pytest.raises(ValueError, match="不支持"):
             parse_document(str(path))
+
+
+# ── 句子切分 ──────────────────────────────────────────────
 
 
 class TestSentenceSplitting:
@@ -118,120 +186,248 @@ class TestSentenceSplitting:
         assert "设备参数" in result[0]
 
 
-class TestKnowledgeBaseRegistry:
-    """知识库注册中心测试（元数据层面，无向量检索）。"""
-
-    def test_register_and_get(self, kb_entries):
-        reg = make_registry_with_kbs(kb_entries)
-        kb = reg.get("test_kb")
-        assert kb is not None
-        assert kb.name == "测试知识库"
-        assert len(kb.entries) == 2
-
-    def test_get_nonexistent(self, kb_entries):
-        reg = make_registry_with_kbs(kb_entries)
-        assert reg.get("nonexistent") is None
-
-    def test_list_all(self, kb_entries):
-        reg = make_registry_with_kbs(kb_entries)
-        all_kbs = reg.list_all()
-        assert len(all_kbs) == 2
-
-    def test_list_infos(self, kb_entries):
-        reg = make_registry_with_kbs(kb_entries)
-        infos = reg.list_infos()
-        assert len(infos) == 2
-        assert "id" in infos[0]
-        assert "entry_count" in infos[0]
-
-    def test_count(self, kb_entries):
-        reg = make_registry_with_kbs(kb_entries)
-        assert reg.count == 2
-
-    def test_get_kb_contents(self, kb_entries):
-        reg = make_registry_with_kbs(kb_entries)
-        content = reg.get_kb_contents(["test_kb"])
-        assert "测试知识库" in content
-
-    def test_register_adds_kb(self):
-        reg = KnowledgeBaseRegistry()
-        kb = KnowledgeBase(name="新知识库", description="测试", kb_id="new_kb", entries=[])
-        reg.register(kb)
-        assert reg.count == 1
-        assert reg.get("new_kb") is kb
+# ── 外部知识库客户端 ──────────────────────────────────────
 
 
-class TestVectorStore:
-    """向量存储测试（sqlite-vec）。"""
+class TestKnowledgeHitClient:
+    """万悟 hit 接口客户端测试。"""
 
-    @pytest.fixture
-    def store(self) -> VectorStore:
-        s = VectorStore(":memory:", dimensions=4)
-        yield s
-        s.close()
+    def make_client(self, responses: list) -> tuple[KnowledgeHitClient, FakeHTTPClient]:
+        http = FakeHTTPClient(responses)
+        # 显式传入所有断言涉及的字段，避免依赖本机 .env / 环境变量
+        settings = Settings(
+            kb_api_base_url="http://kb.example.com",
+            kb_api_key="test-key",
+            kb_match_type="mix",
+            kb_top_k=5,
+            kb_threshold=0.4,
+        )
+        return KnowledgeHitClient(http, settings), http
 
-    def test_insert_and_search(self, store):
-        store.insert("kb_a", {"规则": "测试 A"}, [1.0, 0.0, 0.0, 0.0])
-        store.insert("kb_b", {"规则": "测试 B"}, [0.0, 1.0, 0.0, 0.0])
+    async def test_hit_builds_correct_request(self):
+        client, http = self.make_client([FakeResponse(make_hit_response([]))])
+        await client.hit(["kb1", "kb2"], "测试句子")
 
-        # cos distance ≈ 0 (identical) for kb_a
-        results = store.search([1.0, 0.0, 0.0, 0.0], limit=2, threshold=2.0)
-        assert len(results) >= 1
-        assert results[0]["kb_id"] == "kb_a"
+        req = http.requests[0]
+        assert req["url"] == "http://kb.example.com/service/api/openapi/v1/knowledge/hit"
+        assert req["headers"]["Authorization"] == "Bearer test-key"
+        assert req["json"]["question"] == "测试句子"
+        assert req["json"]["knowledgeList"] == [{"id": "kb1"}, {"id": "kb2"}]
+        params = req["json"]["knowledgeMatchParams"]
+        assert params["matchType"] == "mix"
+        assert params["topK"] == 5
+        assert params["threshold"] == 0.4
 
-    def test_batch_insert(self, store):
-        items = [
-            ("k1", {"a": "1"}, [1.0, 0.0, 0.0, 0.0]),
-            ("k2", {"b": "2"}, [0.0, 1.0, 0.0, 0.0]),
-            ("k3", {"c": "3"}, [0.0, 0.0, 1.0, 0.0]),
-        ]
-        ids = store.insert_batch(items)
-        assert len(ids) == 3
+    async def test_hit_parses_response(self):
+        resp = make_hit_response([
+            ("2003716670903816193", "开票信息.docx", "公司名称：xxx", 0.6106349229812622),
+        ])
+        client, _ = self.make_client([FakeResponse(resp)])
+        hits = await client.hit(["kb1"], "开票信息")
 
-    def test_threshold_filter(self, store):
-        store.insert("kb_a", {"规则": "A"}, [1.0, 0.0, 0.0, 0.0])
+        assert len(hits) == 1
+        # 单库请求：kb_id 取请求的知识库 id，而非响应的 knowledgeName
+        assert hits[0].kb_id == "kb1"
+        assert hits[0].kb_file == "开票信息.docx"
+        assert hits[0].content == "公司名称：xxx"
+        assert hits[0].relevance == 0.611
 
-        # cos distance ≈ 2 (opposite)，threshold=0.5 应过滤掉
-        results = store.search([-1.0, 0.0, 0.0, 0.0], limit=5, threshold=0.5)
-        assert len(results) == 0
+    async def test_hit_kb_id_matches_requested_in_multi_kb(self):
+        """多库请求：knowledgeName 命中请求 id 则对应，否则回退 knowledgeName。"""
+        resp = make_hit_response([
+            ("kb2", "a.docx", "内容A", 0.9),       # knowledgeName ∈ 请求 → kb2
+            ("unknown", "b.docx", "内容B", 0.8),   # 无法对应 → 回退 knowledgeName
+        ])
+        client, _ = self.make_client([FakeResponse(resp)])
+        hits = await client.hit(["kb1", "kb2"], "测试")
+        assert hits[0].kb_id == "kb2"
+        assert hits[1].kb_id == "unknown"
 
-    def test_clear(self, store):
-        store.insert("kb_a", {"x": "y"}, [1.0, 0.0, 0.0, 0.0])
-        store.clear()
-        results = store.search([1.0, 0.0, 0.0, 0.0], limit=5, threshold=2.0)
-        assert len(results) == 0
+    async def test_hit_sorts_by_relevance_desc(self):
+        """命中结果按相关度降序排序（API 原始顺序可能乱序）。"""
+        resp = make_hit_response([
+            ("kn", "low.docx", "低相关", 0.42),
+            ("kn", "high.docx", "高相关", 0.91),
+            ("kn", "mid.docx", "中相关", 0.55),
+        ])
+        client, _ = self.make_client([FakeResponse(resp)])
+        hits = await client.hit(["kb1"], "测试")
+        assert [h.kb_file for h in hits] == ["high.docx", "mid.docx", "low.docx"]
+        assert hits[0].relevance == 0.91
+
+    async def test_hit_empty_result(self):
+        client, _ = self.make_client([FakeResponse(make_hit_response([]))])
+        hits = await client.hit(["kb1"], "无关内容")
+        assert hits == []
+
+    async def test_hit_business_error_no_retry(self):
+        """业务错误（code != 0，如无效 kb_id）不可重试，1 次请求即抛。"""
+        err = FakeResponse({"code": 500, "msg": "无效的知识库", "data": None})
+        client, http = self.make_client([err, err])
+        with pytest.raises(RuntimeError, match="知识库接口返回错误"):
+            await client.hit(["kb1"], "测试")
+        assert len(http.requests) == 1  # 不重试
+
+    async def test_hit_4xx_no_retry(self):
+        """HTTP 4xx（鉴权失败等）不可重试，1 次请求即抛。"""
+        err = FakeResponse({"msg": "unauthorized"}, status_code=401)
+        client, http = self.make_client([err, err])
+        with pytest.raises(RuntimeError, match="请求被拒绝"):
+            await client.hit(["kb1"], "测试")
+        assert len(http.requests) == 1  # 不重试
+
+    async def test_hit_5xx_retries(self):
+        """HTTP 5xx 可重试，重试后仍失败则抛出。"""
+        err = FakeResponse({"msg": "gateway error"}, status_code=502)
+        client, http = self.make_client([err, err])
+        with pytest.raises(RuntimeError, match="知识库检索失败"):
+            await client.hit(["kb1"], "测试")
+        assert len(http.requests) == 2  # 重试了 1 次
+
+    async def test_hit_3xx_retries_with_status_in_error(self):
+        """HTTP 3xx（重定向，通常是 base_url 配置错误）可重试，错误信息保留状态码。"""
+        err = FakeResponse({}, status_code=302)
+        client, http = self.make_client([err, err])
+        with pytest.raises(RuntimeError, match="HTTP 302"):
+            await client.hit(["kb1"], "测试")
+        assert len(http.requests) == 2
+
+    async def test_hit_non_dict_json_retries(self):
+        """响应是合法 JSON 但非对象（如网关返回字符串）→ 按畸形响应重试。"""
+        bad = FakeResponse("upstream timeout")  # .json() 返回字符串
+        ok = FakeResponse(make_hit_response([("kn", "f.md", "内容", 0.9)]))
+        client, http = self.make_client([bad, ok])
+        hits = await client.hit(["kb1"], "测试")
+        assert len(hits) == 1
+        assert len(http.requests) == 2
+
+    async def test_hit_retry_succeeds_on_second_attempt(self):
+        ok = FakeResponse(make_hit_response([("kn", "f.md", "内容", 0.9)]))
+        client, http = self.make_client([ConnectionError("网络错误"), ok])
+        hits = await client.hit(["kb1"], "测试")
+        assert len(hits) == 1
+        assert len(http.requests) == 2
 
 
-class TestSearchResult:
-    """SearchResult 数据类测试。"""
+# ── 聊天入口依赖注入 ──────────────────────────────────────
 
-    def test_search_result_fields(self):
-        entry = {"规则": "测试", "来源": "GB"}
-        sr = SearchResult(kb_id="k1", kb_name="知识库1", kb_file="test.md", entry=entry, relevance=0.85)
-        assert sr.kb_id == "k1"
-        assert sr.kb_file == "test.md"
-        assert sr.relevance == 0.85
+
+class TestSkillDepsInjection:
+    """回归测试：app.py 的注入方式必须能被 review_document 工具路径读到。
+
+    背景：document_review/__init__.py 把包属性 skill 绑定为 DocumentReviewSkill
+    实例（遮蔽 skill 子模块），app.py `from ... import skill` 拿到的是实例，
+    因此 _deps 必须是实例/类属性，模块级全局注入会失效。
+    """
+
+    async def test_deps_injection_reaches_review_path(self, sample_txt_file):
+        # 与 api/app.py 完全相同的导入与注入方式
+        from agent_platform.agents.document_review import skill as injected
+
+        old = injected._deps
+        try:
+            injected._deps = FakeDeps(
+                kb_client=FakeKBClient(hits=[]), model_provider=FakeModelProvider()
+            )
+            out = json.loads(await injected._run_review(sample_txt_file, "kb1"))
+            assert out["summary"]["total_sentences"] == 3
+            assert out["summary"]["errors"] == 0  # deps 生效，未走 kb_client 缺失分支
+        finally:
+            injected._deps = old
+
+    async def test_without_injection_marks_errors(self, sample_txt_file):
+        """未注入 deps 时不崩溃：所有句子标记 error，任务仍能完成。"""
+        from agent_platform.agents.document_review.skill import DocumentReviewSkill
+
+        sk = DocumentReviewSkill()
+        assert sk._deps is None  # 新实例默认未注入
+        out = json.loads(await sk._run_review(sample_txt_file, "kb1"))
+        assert out["summary"]["total_sentences"] == 3
+        assert out["summary"]["errors"] == 3
+
+
+# ── 审阅工具函数 ──────────────────────────────────────────
+
+
+class TestReviewTools:
+    """审阅工具函数测试。"""
+
+    async def test_search_knowledge_bases(self):
+        fake = FakeKBClient(hits=[KBHit(kb_id="k1", kb_file="a.docx", content="条文内容", relevance=0.85)])
+        results = await search_knowledge_bases(["k1"], "测试句子", fake)
+        assert results == [{"kb_id": "k1", "kb_file": "a.docx", "content": "条文内容", "relevance": 0.85}]
+        assert fake.calls == [(["k1"], "测试句子")]
+
+    def test_format_kb_results_empty(self):
+        result = format_kb_results_for_prompt([])
+        assert "无相关" in result
+
+    def test_format_kb_results_with_data(self):
+        data = [{"kb_id": "test", "kb_file": "test.docx", "content": "必须使用法定单位", "relevance": 0.85}]
+        result = format_kb_results_for_prompt(data)
+        assert "test.docx" in result
+        assert "必须使用法定单位" in result
+        assert "0.85" in result
+
+
+# ── 审阅流水线 ────────────────────────────────────────────
 
 
 class TestReviewPipeline:
     """审阅流水线测试。"""
 
-    def test_pipeline_builds(self, kb_entries):
+    def test_pipeline_builds(self):
         """流水线应能正常构建。"""
-        reg = make_registry_with_kbs(kb_entries)
-
-        class MockDeps:
-            kb_registry = reg
-            model_provider = None
-
-        pipeline = ReviewPipeline(MockDeps())
+        pipeline = ReviewPipeline(FakeDeps(kb_client=FakeKBClient()))
         graph = pipeline.build()
         assert graph is not None
 
-    def test_parse_llm_response_yes_new_format(self):
-        """新英文格式 + 结构化 reference。"""
-        from agent_platform.agents.document_review.pipeline import _parse_llm_response
+    async def test_run_pipeline_no_hits(self, sample_txt_file):
+        """检索无结果 → 全部判无问题。"""
+        deps = FakeDeps(kb_client=FakeKBClient(hits=[]), model_provider=FakeModelProvider())
+        result = await run_review_pipeline(sample_txt_file, ["kb1"], deps, task_id=7)
 
+        assert result["summary"]["total_sentences"] == 3
+        assert result["summary"]["issues_found"] == 0
+        assert all(r["has_issue"] == "否" for r in result["results"])
+        assert all(r["task_id"] == 7 for r in result["results"])
+
+    async def test_run_pipeline_with_issue(self, sample_txt_file):
+        """检索有结果 + LLM 判有问题。"""
+        hits = [KBHit(kb_id="kb1", kb_file="规范.docx", content="禁止使用绝对化用语", relevance=0.9)]
+        llm_response = (
+            '{"has_issue": "是", "error_reason": "使用绝对化用语", "suggestion": "改为相对表述", '
+            '"reference": {"kb_id": "kb1", "kb_file": "规范.docx", "content": "禁止使用绝对化用语"}}'
+        )
+        deps = FakeDeps(kb_client=FakeKBClient(hits=hits), model_provider=FakeModelProvider(llm_response))
+        result = await run_review_pipeline(sample_txt_file, ["kb1"], deps)
+
+        assert result["summary"]["issues_found"] == 3
+        first = result["results"][0]
+        assert first["has_issue"] == "是"
+        assert first["content"]["reference"]["kb_file"] == "规范.docx"
+
+    async def test_run_pipeline_kb_error_marks_error(self, sample_txt_file):
+        """检索失败（重试后）→ 该句标记 error，任务不中断。"""
+        deps = FakeDeps(
+            kb_client=FakeKBClient(error=RuntimeError("平台不可用")),
+            model_provider=FakeModelProvider(),
+        )
+        result = await run_review_pipeline(sample_txt_file, ["kb1"], deps)
+
+        assert result["summary"]["total_sentences"] == 3
+        assert result["summary"]["errors"] == 3
+        assert all(r["error"] for r in result["results"])
+        assert all(r["has_issue"] == "否" for r in result["results"])
+
+    async def test_run_pipeline_no_kb_client(self, sample_txt_file):
+        """kb_client 未初始化 → 全部标记 error。"""
+        deps = FakeDeps(kb_client=None, model_provider=FakeModelProvider())
+        result = await run_review_pipeline(sample_txt_file, ["kb1"], deps)
+        assert result["summary"]["errors"] == 3
+
+    def test_parse_llm_response_yes_new_format(self):
+        """结构化 reference 解析。"""
         response = '{"has_issue": "是", "error_reason": "禁用词", "suggestion": "改表述", "reference": {"kb_id": "compliance", "kb_file": "合规知识库", "content": "禁止使用..."}}'
         result = _parse_llm_response(response, "测试句子")
         assert result["has_issue"] == "是"
@@ -241,37 +437,17 @@ class TestReviewPipeline:
         assert result["content"]["reference"]["kb_file"] == "合规知识库"
 
     def test_parse_llm_response_no(self):
-        from agent_platform.agents.document_review.pipeline import _parse_llm_response
-
         response = '{"has_issue": "否"}'
         result = _parse_llm_response(response, "测试句子")
         assert result["has_issue"] == "否"
         assert result["content"] == {}
 
     def test_parse_llm_response_with_markdown(self):
-        from agent_platform.agents.document_review.pipeline import _parse_llm_response
-
         response = '```json\n{"has_issue": "否"}\n```'
         result = _parse_llm_response(response, "测试句子")
         assert result["has_issue"] == "否"
 
     def test_parse_llm_response_invalid(self):
-        from agent_platform.agents.document_review.pipeline import _parse_llm_response
-
         response = "这不是有效的 JSON"
         result = _parse_llm_response(response, "测试句子")
         assert result["has_issue"] == "否"
-
-
-class TestReviewTools:
-    """审阅工具函数测试。"""
-
-    def test_format_kb_results_empty(self):
-        result = format_kb_results_for_prompt([])
-        assert "无相关" in result
-
-    def test_format_kb_results_with_data(self):
-        data = [{"kb_id": "test", "kb_name": "测试", "kb_file": "test.md", "entry": {"规则": "必须使用法定单位", "来源": "GB"}, "relevance": 0.85}]
-        result = format_kb_results_for_prompt(data)
-        assert "test.md" in result
-        assert "GB" in result

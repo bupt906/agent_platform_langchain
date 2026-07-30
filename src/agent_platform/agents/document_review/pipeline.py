@@ -9,7 +9,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING
 
 from langchain_core.messages import HumanMessage
 from langgraph.graph import END, START, StateGraph
@@ -44,7 +44,7 @@ _REVIEW_SYSTEM_PROMPT = """\
 如果无问题：
 {{"has_issue": "否"}}
 
-注意：reference 中的 kb_id 必须来自检索结果的 kb_id，kb_file 必须使用检索结果中的"知识库文件"（如 compliance.md），content 必须从知识库原文中引用。
+注意：reference 中的 kb_id 必须来自检索结果的"知识库id"，kb_file 必须使用检索结果中的"知识库文件"，content 必须从知识库原文中引用。
 
 ## 本次审查的知识库检索结果
 {kb_results}
@@ -58,16 +58,12 @@ _REVIEW_SYSTEM_PROMPT = """\
 class ReviewPipeline:
     """文档审阅流水线。
 
-    修复项：
-    1. 去掉 _skill_deps 全局变量，通过构造器注入 deps
-    2. 合并 parse+split 为一个节点，消除重复解析
-    3. 去掉无用的 _parse_node
-    4. tool_config timeout 传递给 model 调用
-    5. search 降级路径已在 registry.search() 内部处理
-    6. 逐句串行 + asyncio.Semaphore 控制并发（sem=1 即串行）
+    知识库检索通过外部万悟平台 hit 接口完成（deps.kb_client），
+    检索失败（重试后）该句标记 error 并继续，不中断整个任务。
+    每批 5 句并发审阅，实际并发数由 asyncio.Semaphore(max_concurrency) 控制。
     """
 
-    def __init__(self, deps: PlatformDeps, max_concurrency: int = 1) -> None:
+    def __init__(self, deps: PlatformDeps, max_concurrency: int = 5) -> None:
         self._deps = deps
         self._semaphore = asyncio.Semaphore(max_concurrency)
 
@@ -93,8 +89,12 @@ class ReviewPipeline:
     async def _split_node(self, state: dict) -> dict:
         file_path = state["file_path"]
         logger.info("解析文档: %s", file_path)
-        text = parse_document(file_path)
-        sentences = split_sentences(text)
+
+        # 解析+切句为同步阻塞调用（含 URL 下载/docx 解析），放线程池避免阻塞事件循环
+        def _parse_and_split() -> list[str]:
+            return split_sentences(parse_document(file_path))
+
+        sentences = await asyncio.to_thread(_parse_and_split)
         logger.info("切分为 %d 个句子", len(sentences))
         if not sentences:
             return {**state, "sentences": [], "current_index": 0, "results": [], "final_output": json.dumps({"results": [], "summary": {"total_sentences": 0, "issues_found": 0, "errors": 0, "kb_ids_used": state.get("kb_ids", [])}}, ensure_ascii=False)}
@@ -160,13 +160,17 @@ class ReviewPipeline:
         self, index: int, sentence: str, kb_ids: list[str], task_id: int,
     ) -> dict:
         """审查单个句子。"""
-        # 1. 检索知识库
-        kb_registry = self._deps.kb_registry
-        if not kb_registry:
-            logger.warning("kb_registry 未初始化，句子 [%d] 跳过审阅", index)
+        # 1. 检索外部知识库（client 内部已重试，仍失败则标记 error 继续）
+        kb_client = self._deps.kb_client if self._deps else None
+        if not kb_client:
+            logger.warning("kb_client 未初始化，句子 [%d] 跳过审阅", index)
             return {"task_id": task_id, "sentence_index": index, "reviewed_sentence": sentence, "has_issue": "否", "content": {}, "error": True}
 
-        kb_results = await search_knowledge_bases(kb_ids, sentence, kb_registry)
+        try:
+            kb_results = await search_knowledge_bases(kb_ids, sentence, kb_client)
+        except Exception as e:
+            logger.warning("知识库检索失败 [%d]: %s", index, e)
+            return {"task_id": task_id, "sentence_index": index, "reviewed_sentence": sentence, "has_issue": "否", "content": {}, "error": True}
 
         # 2. 无结果 → 无问题
         if not kb_results:
@@ -185,7 +189,7 @@ class ReviewPipeline:
         try:
             model = self._deps.model_provider.get_model()
             response = await model.ainvoke([HumanMessage(content=prompt)])
-            return {**_parse_llm_response(response.content, sentence), "task_id": task_id, "sentence_index": index, "error": False}
+            return {**_parse_llm_response(response.content, sentence, kb_ids), "task_id": task_id, "sentence_index": index, "error": False}
         except Exception as e:
             logger.warning("LLM 审阅失败 [%d]: %s", index, e)
             return {"task_id": task_id, "sentence_index": index, "reviewed_sentence": sentence, "has_issue": "否", "content": {}, "error": True}
@@ -218,13 +222,17 @@ async def run_review_pipeline(
             "summary": {
                 "total_sentences": len(result.get("sentences", [])),
                 "issues_found": sum(1 for r in result.get("results", []) if r.get("has_issue") == "是"),
+                "errors": sum(1 for r in result.get("results", []) if r.get("error")),
                 "kb_ids_used": kb_ids,
             },
         }
 
 
-def _parse_llm_response(response_text: str, sentence: str) -> dict:
-    """解析 LLM 返回的 JSON 响应。"""
+def _parse_llm_response(response_text: str, sentence: str, kb_ids: list[str] | None = None) -> dict:
+    """解析 LLM 返回的 JSON 响应。
+
+    reference.kb_id 透传 /review 接口传入的原始 kb_ids，而非 LLM 从检索结果中挑选的单个 kb_id。
+    """
     text = response_text.strip()
     if text.startswith("```"):
         lines = text.split("\n")
@@ -265,7 +273,7 @@ def _parse_llm_response(response_text: str, sentence: str) -> dict:
             "error_reason": parsed.get("error_reason", ""),
             "suggestion": parsed.get("suggestion", ""),
             "reference": {
-                "kb_id": ref.get("kb_id", ""),
+                "kb_id": kb_ids if kb_ids is not None else ref.get("kb_id", ""),
                 "kb_file": ref.get("kb_file", ""),
                 "content": ref.get("content", ""),
             },

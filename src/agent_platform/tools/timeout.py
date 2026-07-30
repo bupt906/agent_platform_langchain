@@ -66,4 +66,8 @@ def wrap_tool_with_timeout(tool, timeout_seconds: float = 30.0):
         func=None,
         coroutine=_wrapped,
         args_schema=tool.args_schema,
+        return_direct=getattr(tool, "return_direct", False),
+        response_format=getattr(tool, "response_format", "content"),
+        metadata=getattr(tool, "metadata", None),
+        tags=getattr(tool, "tags", None),
     )

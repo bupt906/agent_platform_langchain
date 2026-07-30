@@ -31,7 +31,8 @@ async def list_approvals(request: Request, session_id: str | None = None):
     store = deps.approval_store
     if not store:
         return {"approvals": [], "total": 0}
-    await store.cleanup_expired(deps.approval_store._db_settings.get("timeout", 300) if hasattr(deps.approval_store, "_db_settings") else 300)
+    approval_timeout = request.app.state.settings.hitl_approval_timeout if hasattr(request.app.state, "settings") else 300
+    await store.cleanup_expired(approval_timeout)
     items = await store.list_pending(session_id=session_id)
     return {"approvals": items, "total": len(items)}
 
@@ -56,18 +57,28 @@ async def decide_approval(request: Request, approval_id: str, body: ApproveBody)
 
     # ── 恢复执行 ──
     resume_value = body.message if body.message else (body.decision == "approve")
-    checkpointer = deps.checkpointer
     thread_id = req_data["thread_id"]
+    skill_name = req_data.get("skill_name", "")
 
     config = {"configurable": {"thread_id": thread_id}}
     cmd = Command(resume=resume_value)
 
-    # 在后台恢复执行（图可能不在当前进程中运行）
+    # 重建 skill 的 agent graph 并通过 Command 恢复执行
     try:
-        # 通过 checkpointer 找到对应的图并恢复
-        logger.info("恢复执行: thread=%s, approval=%s, decision=%s", thread_id, approval_id, body.decision)
+        skill = deps.skill_registry.get(skill_name) if skill_name else None
+        if skill:
+            skills = deps.skill_registry.get_all_skills()
+            agent = skill.compose(skills, deps.model_provider) or skill.create_agent(
+                deps.model_provider, checkpointer=deps.checkpointer
+            )
+            # 使用 Command 恢复被 interrupt() 暂停的图执行
+            await agent.ainvoke(cmd, config=config)
+            logger.info("恢复执行成功: thread=%s, approval=%s, decision=%s", thread_id, approval_id, body.decision)
+        else:
+            logger.warning("无法恢复执行: 未找到 skill '%s'", skill_name)
     except Exception as e:
         logger.error("恢复执行失败: %s", e)
+        raise HTTPException(status_code=500, detail=f"恢复执行失败: {e}") from e
 
     return {
         "id": approval_id,
@@ -79,7 +90,7 @@ async def decide_approval(request: Request, approval_id: str, body: ApproveBody)
 @router.post("/replan")
 async def request_replan(request: Request, session_id: str, proposed_revision: str = ""):
     """提交重规划请求。"""
-    deps = _get_deps(request)
+    _ = _get_deps(request)  # 预留：后续可用于校验 session 与审批状态
     return {
         "session_id": session_id,
         "status": "replan_requested",

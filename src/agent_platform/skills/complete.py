@@ -11,7 +11,6 @@ import json
 from langchain_core.tools import StructuredTool
 from pydantic import BaseModel, Field
 
-
 # ── 通用 complete ────────────────────────────────────────────
 
 class CompleteTaskInput(BaseModel):

@@ -65,9 +65,6 @@ class Settings(BaseSettings):
     tool_budget_max_calls: int = 50  # 单次对话最大工具调用次数
     mcp_dynamic_reload: bool = True  # 运行时重载 MCP 工具
 
-    # ── Callback ──
-    callback_base_url: str = ""  # 外部 callback 服务地址（空=使用内置 callback 端点）
-
     # ── 声明式 Skills ──
     declarative_skills_enabled: bool = True  # 是否启用声明式 Skill 系统
     declarative_skills_max_tool_calls: int = 10  # Skill 执行的工具调用上限
@@ -90,14 +87,21 @@ class Settings(BaseSettings):
     hitl_auto_approve_low_risk: bool = False  # 自动批准低风险操作
 
     # ── 审阅回调 ──
-    callback_base_url: str = "http://192.168.22.183:28080"  # 审阅结果回调地址
-    callback_auth_token: str = ""  # 回调时携带的 X-Auth-Token
+    callback_base_url: str = "http://192.168.22.231:28080"  # 审阅结果回调地址（为空则不发送回调）
+    callback_auth_token: str = "ABC123XYZ"  # 回调时携带的 X-Auth-Token
 
-    # ── 向量 RAG ──
-    embedding_model: str = ""  # embedding 模型（空=复用 default_model 同 provider 的 embedding）
-    embedding_dimensions: int = 1536  # 向量维度（OpenAI=1536, Qwen=1024）
-    kb_vector_top_k: int = 5  # 向量检索 top-k
-    kb_vector_threshold: float = 0.7  # 余弦距离阈值（0=完全匹配，2=相反，默认0.7）
+    # ── 外部知识库（万悟平台 hit 检索接口）──
+    kb_api_base_url: str = "http://10.77.100.102:8081"  # 知识库平台地址
+    kb_api_key: str = "ww-f11218132a964b1389f56b07a3aa2f01"  # Bearer API Key
+    kb_match_type: str = "mix"  # 检索模式：vector / text / mix
+    kb_rerank_model_id: str = "2041688922286723072"  # 重排序模型 UUID（mix 模式可选）
+    kb_priority_match: int = 0  # 权重匹配开关（mix 模式）：0=关闭 1=开启
+    kb_semantics_priority: float = 0.2  # 语义权重（priority_match=1 时生效）
+    kb_keyword_priority: float = 0.8  # 关键词权重（priority_match=1 时生效）
+    kb_top_k: int = 5  # 返回结果数量
+    kb_threshold: float = 0.4  # 相似度过滤阈值
+    kb_use_graph: bool = False  # 是否使用知识图谱
+    kb_request_timeout: float = 30.0  # hit 接口请求超时（秒）
 
     models: ModelConfig = Field(default_factory=ModelConfig)
 

@@ -31,7 +31,7 @@ def _extract_tokens_from_message(msg) -> dict[str, int]:
     tokens = {"prompt": 0, "completion": 0, "total": 0}
     try:
         um = getattr(msg, "usage_metadata", None) or {}
-        if um.get("total_tokens"):
+        if "total_tokens" in um:
             tokens["prompt"] = um.get("input_tokens", 0)
             tokens["completion"] = um.get("output_tokens", 0)
             tokens["total"] = um.get("total_tokens", 0)
@@ -186,7 +186,7 @@ async def execute_decision(
                 user_message=message,
                 assistant_message=reply,
                 skill_used=decision.skill_name,
-                tokens_used=0,
+                tokens_used=tokens["total"],
                 duration_ms=(time.monotonic() - start_time) * 1000,
             )
         except Exception:
@@ -240,32 +240,36 @@ async def execute_skill_direct(
     if not skill and not declarative:
         return f"未找到技能: {skill_name}"
 
-    # 命中声明式 Skill：走动态构建路径
-    if declarative:
-        reply, tokens = await _execute_declarative_skill(declarative, message, deps, model_id, invoke_cfg)
-        # 记录 session 和审计
-        return reply
-
     start_time = time.monotonic()
     reply = ""
     error = None
     tokens = {"prompt": 0, "completion": 0, "total": 0}
 
-    try:
-        skills = deps.skill_registry.get_all_skills()
-        agent = skill.compose(skills, deps.model_provider) or skill.create_agent(
-            deps.model_provider, checkpointer=deps.checkpointer
-        )
-        result = await agent.ainvoke(
-            {"messages": [HumanMessage(content=message)]},
-            config=invoke_cfg,
-        )
-        reply = result["messages"][-1].content
-        tokens = _extract_tokens(result)
-    except Exception as e:
-        error = str(e)
-        logger.error("技能直接调用失败: %s", error, exc_info=True)
-        reply = f"抱歉，处理请求时出现错误: {error}"
+    # 命中声明式 Skill：走动态构建路径
+    if declarative:
+        try:
+            reply, tokens = await _execute_declarative_skill(declarative, message, deps, model_id, invoke_cfg)
+            skill_name = f"skill:{declarative.name}"
+        except Exception as e:
+            error = str(e)
+            logger.error("声明式 Skill 执行失败: %s", error, exc_info=True)
+            reply = f"抱歉，处理请求时出现错误: {error}"
+    else:
+        try:
+            skills = deps.skill_registry.get_all_skills()
+            agent = skill.compose(skills, deps.model_provider) or skill.create_agent(
+                deps.model_provider, checkpointer=deps.checkpointer
+            )
+            result = await agent.ainvoke(
+                {"messages": [HumanMessage(content=message)]},
+                config=invoke_cfg,
+            )
+            reply = result["messages"][-1].content
+            tokens = _extract_tokens(result)
+        except Exception as e:
+            error = str(e)
+            logger.error("技能直接调用失败: %s", error, exc_info=True)
+            reply = f"抱歉，处理请求时出现错误: {error}"
 
     duration_ms = (time.monotonic() - start_time) * 1000
 
@@ -277,6 +281,7 @@ async def execute_skill_direct(
                 user_message=message,
                 assistant_message=reply,
                 skill_used=skill_name,
+                tokens_used=tokens["total"],
                 duration_ms=duration_ms,
             )
         except Exception:
