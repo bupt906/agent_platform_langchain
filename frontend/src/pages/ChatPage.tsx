@@ -111,7 +111,7 @@ function Conversation({ turns }: { turns: ChatTurn[] }) {
       {turn.role === "assistant" && <p className="mb-2 text-xs font-medium text-slate-400">Agent Studio</p>}
       {turn.activities.length > 0 && <ActivityList items={turn.activities} />}
       {turn.reasoning && <Reasoning content={turn.reasoning} />}
-      {turn.content && <div className="whitespace-pre-wrap text-sm leading-7 text-slate-700">{turn.content}</div>}
+      {turn.content && <div className={`whitespace-pre-wrap text-sm leading-7 ${turn.role === "user" ? "text-white" : "text-slate-700"}`}>{turn.content}</div>}
       {turn.pending && !turn.content && <LoadingReply />}
       {turn.stopped && <p className="mt-2 text-xs text-slate-400">已停止生成</p>}
       {turn.error && <p className="mt-2 rounded-lg bg-rose-50 px-3 py-2 text-xs text-rose-600">{turn.error}</p>}
