@@ -15,6 +15,7 @@ from agent_platform.core.deps import PlatformDeps
 from agent_platform.core.router import (
     RouterDecision,
     _execute_declarative_skill_direct,
+    _load_session_messages,
     execute_decision,
     execute_skill_direct,
     resolve_route,
@@ -213,9 +214,15 @@ async def chat_stream(request: Request, body: ChatRequest) -> EventSourceRespons
                 model, declarative, tools, max_tool_calls=max_calls, session_id=effective_body.session_id or ""
             )
 
+            # 加载会话历史，让 skill 感知多轮上下文
+            history_messages = await _load_session_messages(
+                deps, effective_body.session_id or ""
+            )
+            input_messages = [*history_messages, HumanMessage(content=effective_body.message)]
+
             try:
                 async for event in agent.astream_events(
-                    {"messages": [HumanMessage(content=effective_body.message)]},
+                    {"messages": input_messages},
                     version="v2",
                     config=invoke_cfg,
                 ):

@@ -50,7 +50,7 @@ export default function ChatPage() {
   }, [turns, isStreaming]);
 
   const agentChoices = useMemo(() => skills.filter((skill) => !skill.name.includes("-")), [skills]);
-  const skillChoices = useMemo(() => [{ name: "knowledge-graph-extraction", description: "从文档抽取知识图谱" }, ...skills.filter((skill) => skill.name.includes("-"))], [skills]);
+  const skillChoices = useMemo(() => skills.filter((skill) => skill.name.includes("-")), [skills]);
 
   const handleSend = (prompt = input) => {
     const text = prompt.trim();

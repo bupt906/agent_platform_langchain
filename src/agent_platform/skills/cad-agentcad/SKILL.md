@@ -84,14 +84,89 @@ tool returns them separately — do NOT merge with `2>&1`.
 
 ## Script writing rules
 
-- The file **must end in `.py`** (e.g. `model.py`). agentcad only runs `.py`
-  scripts.
-- `show_object(result)` is **required** — at least one call. Without it there is
-  nothing to export.
-- No imports needed: `Box`, `Cylinder`, `Sphere`, `Plane`, `Compound`, and
-  edit helpers (`load_step`, `fillet_edges`, `chamfer_edges`, `shell_faces`,
-  `cut_pocket`, `boss`, `split_by_plane`) are pre-injected.
-- Booleans use Python operators: `plate - hole`, `A + B`, `A & B`.
+### CRITICAL — build123d syntax that works (verified on agentcad v0.4)
+
+These are the rules that make scripts run. **Do not deviate.** If you write
+`from build123d import ...`, agentcad breaks — it pre-injects everything, so
+**never write import statements for build123d**.
+
+1. **No imports.** `Box`, `Cylinder`, `Sphere`, `Plane`, `Compound`, `Axis`,
+   `fillet`, `chamfer` are pre-injected. Never write `from build123d import ...`.
+2. **Fillet/chamfer use the TOP-LEVEL `fillet()` / `chamfer()` functions**, NOT
+   `.fillet()` methods and NOT `fillet_edges`:
+   ```python
+   part = fillet(part.edges().filter_by(Axis.Z), 3)   # ✅ R3 on vertical edges
+   part = chamfer(part.edges().filter_by(Axis.Z), 2)   # ✅ 2mm chamfer
+   ```
+3. **Holes = boolean subtraction with a `Cylinder`.** Position it, then subtract:
+   ```python
+   hole = Cylinder(12.5, 200).rotate(Axis.X, 90).translate((0, 0, 50))
+   part = part - hole
+   ```
+4. **Counterbore/countersink = stack two cylinders and subtract both:**
+   ```python
+   for sx, sy in ((-40,-30), (40,-30), (-40,30), (40,30)):
+       hole = Cylinder(8.5/2, 30).translate((sx, sy, -5))     # through hole
+       cs   = Cylinder(16/2, 5).translate((sx, sy, 2.5))       # 16mm × 5mm counterbore
+       part = part - hole - cs
+   ```
+5. **Assembly = boolean union with `+`.** Build pieces at origin, then
+   `.translate()`:
+   ```python
+   base   = Box(120, 80, 15).translate((0, 0, 7.5))
+   ear    = Box(15, 80, 70).translate((0, 20, 50))
+   part   = base + ear + ear.mirror(Axis.Y)                  # symmetric second ear
+   ```
+6. **Mirror for symmetry:** `shape.mirror(Axis.X)` / `shape.mirror(Axis.Y)`
+   mirrors across that axis (build123d method, works on a Shape).
+7. **Ellipse (oval slot) = build from an elliptical Sketch or approximate with
+   cylinders + box:** for an oval hole, union two cylinders and a box then
+   subtract:
+   ```python
+   oval = (Cylinder(10, 30).translate((0, 10, 0)) + Cylinder(10, 30).translate((0, -10, 0))
+           + Box(20, 20, 30)).rotate(Axis.X, 90).translate(...)
+   part = part - oval
+   ```
+8. **Always end with `show_object(part)`.**
+
+### Complete worked example — robot fork joint bracket (verified)
+
+```python
+# 机器人关节连接叉座 Fork Joint Bracket
+L = 120.0  # mm 底座长
+W = 80.0   # mm 底座宽
+H = 15.0   # mm 底座厚
+ear_t = 15.0   # mm 耳厚
+ear_h = 70.0   # mm 耳高
+gap = 40.0     # mm 两耳间距
+bore_dia = 25.0  # mm 旋转轴孔
+
+base = Box(L, W, H).translate((0, 0, H/2))
+ear1 = Box(ear_t, W, ear_h).translate((0, gap/2, H + ear_h/2))
+ear2 = Box(ear_t, W, ear_h).translate((0, -gap/2, H + ear_h/2))
+part = base + ear1 + ear2
+
+# 旋转轴孔 贯穿 (同轴, 孔心距底座顶 50mm)
+bore = Cylinder(bore_dia/2, 200).rotate(Axis.X, 90).translate((0, 0, H + 50))
+part = part - bore
+
+# 底部 4 个沉头安装孔 (8.5 通孔 + 16 沉头 x 5 深)
+for sx in (-40, 40):
+    for sy in (-30, 30):
+        hole = Cylinder(8.5/2, 30).translate((sx, sy, -5))
+        cs   = Cylinder(16/2, 5).translate((sx, sy, 2.5))
+        part = part - hole - cs
+
+# 所有外部竖边 圆角 R3
+part = fillet(part.edges().filter_by(Axis.Z), 3)
+
+show_object(part)
+```
+
+Follow this structure for any multi-feature part: build base → add ears/features
+via `+` → subtract holes via `-` → fillet/chamfer edges → `show_object`.
+
+
 - Build at origin, then `translate()` / `rotate()` to position.
 - Keep each script on ONE CAD API (build123d by default; CadQuery only for
   existing projects via `--runtime cadquery`).
