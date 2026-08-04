@@ -23,6 +23,8 @@ TEXT_SUFFIXES = {
     ".graphml",
     ".cypher",
     ".ttl",
+    ".py",
+    ".pyw",
 }
 SUPPORTED_ENCODINGS = ("utf-8", "utf-8-sig", "gb18030")
 

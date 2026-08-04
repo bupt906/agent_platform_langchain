@@ -37,11 +37,29 @@ agentcad --help
 
 ## 二、让中台 bash 工具能找到 agentcad
 
-中台 `bash` 工具用 `shutil.which()` 解析命令名。两种方式：
+中台 `bash` 工具用 `shutil.which()` 解析命令名。**注意：bash 工具不经过
+shell、不展开环境变量**（`$VAR` 不会生效），也不允许 `cd && ...` 串联。
+所以 SKILL.md 使用 **完整路径** 直接调用 agentcad。
 
-### 方式 A（推荐）：把 agentcad 加入 PATH
+### 推荐：使用完整路径
 
-在服务器 `.bashrc` / 启动中台的环境变量里：
+把 agentcad 的可执行文件完整路径填到 SKILL.md 的命令里，例如：
+
+```
+# Linux/macOS
+/path/to/anaconda3/envs/agentcad-py312/bin/agentcad run ...
+
+# Windows
+D:\software\anaconda\anaconda\envs\agentcad-py312\Scripts\agentcad.exe run ...
+```
+
+bash 工具的白名单已包含 `agentcad` 和 `agentcad.exe`，完整路径以这两个
+结尾都能通过校验。
+
+### 备选：把 agentcad 加入 PATH
+
+如果你希望 SKILL.md 里的 `agentcad` 裸命令可直接用，把 agentcad 所在的
+Scripts/bin 目录加入启动中台的 shell 的 PATH：
 
 ```bash
 export PATH="/path/to/anaconda3/envs/agentcad-py312/bin:$PATH"
@@ -49,13 +67,6 @@ export PATH="/path/to/anaconda3/envs/agentcad-py312/bin:$PATH"
 
 这样 SKILL.md 里的 `agentcad init` / `agentcad run ...` 直接可用。
 
-### 方式 B：使用完整路径
-
-如果不想改 PATH，把 SKILL.md 中的 `agentcad` 全部替换为完整路径，例如：
-
-```
-/path/to/anaconda3/envs/agentcad-py312/bin/agentcad run ...
-```
 
 ## 三、bash 白名单配置
 

@@ -213,6 +213,7 @@ def _safe_environment() -> dict[str, str]:
         "LC_ALL",
         "PATH",
         "PYTHONPATH",
+        "PYTHONUTF8",
         "VIRTUAL_ENV",
         "SYSTEMROOT",
         "TMP",
