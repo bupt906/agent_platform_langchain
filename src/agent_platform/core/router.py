@@ -16,6 +16,14 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 
+def _declarative_skill_unavailable(deps: PlatformDeps, skill_name: str) -> bool:
+    """判断声明式 Skill 是否因配置错误被注册中心隔离。"""
+    return bool(
+        deps.declarative_registry
+        and skill_name in deps.declarative_registry.unavailable_skills
+    )
+
+
 class RouterDecision(BaseModel):
     """路由决策结果。"""
 
@@ -145,6 +153,7 @@ async def execute_decision(
     reply = ""
     error = None
     tokens = {"prompt": 0, "completion": 0, "total": 0}
+    declarative_selected = False
 
     try:
         if decision.mode == "multi" and decision.execution_plan:
@@ -167,12 +176,31 @@ async def execute_decision(
                 # 检查声明式 Skill 匹配
                 declarative = deps.declarative_registry.get(decision.skill_name) if deps.declarative_registry else None
                 if declarative and deps.declarative_registry:
+                    declarative_selected = True
                     reply, tokens = await _execute_declarative_skill(declarative, message, deps, model_id, invoke_cfg)
                     decision.skill_name = f"skill:{declarative.name}"
+                elif _declarative_skill_unavailable(deps, decision.skill_name):
+                    logger.warning("声明式 Skill '%s' 不可用，降级为通用对话", decision.skill_name)
+                    decision.skill_name = "general"
+                    reply, tokens = await _general_response(message, deps, model_id, invoke_cfg)
                 elif decision.skill_name == "general":
                     reply, tokens = await _general_response(message, deps, model_id, invoke_cfg)
                 else:
                     raise ValueError(f"自动路由选择了未注册的 Skill '{decision.skill_name}'")
+    except RuntimeError as e:
+        error = str(e)
+        if declarative_selected:
+            logger.warning("声明式 Skill 执行失败，降级为通用对话: %s", error, exc_info=True)
+            decision.skill_name = "general"
+            try:
+                reply, tokens = await _general_response(message, deps, model_id, invoke_cfg)
+            except Exception as fallback_error:
+                error = f"{error}; 通用对话降级失败: {fallback_error}"
+                logger.error("通用对话降级失败: %s", fallback_error, exc_info=True)
+                reply = f"抱歉，处理请求时出现错误: {error}"
+        else:
+            logger.error("决策执行失败: %s", error, exc_info=True)
+            reply = f"抱歉，处理请求时出现错误: {error}"
     except Exception as e:
         error = str(e)
         logger.error("决策执行失败: %s", error, exc_info=True)
@@ -395,19 +423,29 @@ async def _execute_declarative_skill_direct(
     *,
     model_id: str | None = None,
     session_id: str | None = None,
-) -> str:
+) -> tuple[str, str]:
     """跳过路由，直接执行声明式 Skill。"""
     if not deps.declarative_registry:
-        return "声明式 Skill 系统未启用"
+        return "声明式 Skill 系统未启用", skill_name
 
     skill = deps.declarative_registry.get(skill_name)
     if not skill:
+        if _declarative_skill_unavailable(deps, skill_name):
+            logger.warning("声明式 Skill '%s' 不可用，降级为通用对话", skill_name)
+            invoke_cfg = _build_invoke_config(session_id)
+            reply, _ = await _general_response(message, deps, model_id, invoke_cfg)
+            return reply, "general"
         available = [s.name for s in (deps.declarative_registry.list_skills() or [])]
-        return f"未找到声明式 Skill: {skill_name}。可用: {', '.join(available)}"
+        return f"未找到声明式 Skill: {skill_name}。可用: {', '.join(available)}", skill_name
 
     invoke_cfg = _build_invoke_config(session_id)
-    reply, _ = await _execute_declarative_skill(skill, message, deps, model_id, invoke_cfg)
-    return reply
+    try:
+        reply, _ = await _execute_declarative_skill(skill, message, deps, model_id, invoke_cfg)
+        return reply, skill_name
+    except RuntimeError as exc:
+        logger.warning("声明式 Skill '%s' 执行失败，降级为通用对话: %s", skill_name, exc, exc_info=True)
+        reply, _ = await _general_response(message, deps, model_id, invoke_cfg)
+        return reply, "general"
 
 
 # ── 向后兼容 ──────────────────────────────────────────────────

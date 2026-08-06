@@ -58,6 +58,33 @@ async def test_resolve_single_target_rejects_unknown_explicit_skill(deps) -> Non
         )
 
 
+def test_resolve_single_target_falls_back_for_unavailable_skill(tmp_path, deps) -> None:
+    skill_dir = tmp_path / "broken"
+    skill_dir.mkdir()
+    (skill_dir / "SKILL.md").write_text(
+        """---
+name: broken
+description: Broken skill
+tools: [missing_tool]
+---
+
+# Broken
+""",
+        encoding="utf-8",
+    )
+
+    def reject_missing_tool(_skill):
+        raise RuntimeError("工具未注册: missing_tool")
+
+    deps.declarative_registry = DeclarativeSkillRegistry(tmp_path, validator=reject_missing_tool)
+
+    agent, skill, target_type = _resolve_single_target(deps, "broken", explicit_mode="skill")
+
+    assert agent is None
+    assert skill is None
+    assert target_type == "general"
+
+
 @pytest.mark.asyncio
 async def test_guard_sse_stream_surfaces_uncaught_errors() -> None:
     async def broken_stream():

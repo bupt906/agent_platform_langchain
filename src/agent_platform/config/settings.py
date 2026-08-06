@@ -10,9 +10,6 @@ class ModelConfig(BaseSettings):
     openai_api_key: str = ""
     openai_base_url: str = "https://api.openai.com/v1"
 
-    volcengine_api_key: str = ""
-    volcengine_base_url: str = "https://ark.cn-beijing.volces.com/api/coding/v3"
-
     deepseek_api_key: str = ""
     deepseek_base_url: str = "https://api.deepseek.com/v1"
 
@@ -25,7 +22,7 @@ class ModelConfig(BaseSettings):
 
 
 class Settings(BaseSettings):
-    default_model: str = "volcengine:ark-code-latest"
+    default_model: str = "deepseek:deepseek-v4-pro"
     mcp_config_path: Path = Path("mcp_config.json")
     log_level: str = "INFO"
     api_host: str = "0.0.0.0"

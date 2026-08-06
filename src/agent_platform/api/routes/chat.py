@@ -14,6 +14,7 @@ from agent_platform.api.schemas import ChatRequest, ChatResponse
 from agent_platform.core.deps import PlatformDeps
 from agent_platform.core.router import (
     RouterDecision,
+    _declarative_skill_unavailable,
     _execute_declarative_skill_direct,
     execute_decision,
     execute_skill_direct,
@@ -35,7 +36,7 @@ def _resolve_single_target(
     skill_name: str,
     explicit_mode: str = "",
 ) -> tuple[Any | None, Any | None, str]:
-    """解析单路由目标；显式或自动路由到未知 Skill 时立即报错。"""
+    """解析单路由目标；不可用 Skill 降级为通用对话，未知 Skill 立即报错。"""
     if explicit_mode == "agent":
         skill = deps.skill_registry.get(skill_name)
         if not skill:
@@ -46,6 +47,8 @@ def _resolve_single_target(
     if explicit_mode == "skill":
         declarative = deps.declarative_registry.get(skill_name) if deps.declarative_registry else None
         if not declarative:
+            if _declarative_skill_unavailable(deps, skill_name):
+                return None, None, "general"
             available = (
                 ", ".join(s.name for s in deps.declarative_registry.list_skills())
                 if deps.declarative_registry
@@ -60,6 +63,8 @@ def _resolve_single_target(
     declarative = deps.declarative_registry.get(skill_name) if deps.declarative_registry else None
     if declarative:
         return None, declarative, "skill"
+    if _declarative_skill_unavailable(deps, skill_name):
+        return None, None, "general"
     if skill_name == "general":
         return None, None, "general"
 
@@ -119,7 +124,7 @@ async def chat(request: Request, body: ChatRequest) -> ChatResponse:
         )
 
     if body.skill:
-        reply = await _execute_declarative_skill_direct(
+        reply, skill_used = await _execute_declarative_skill_direct(
             body.skill,
             body.message,
             deps,
@@ -128,7 +133,7 @@ async def chat(request: Request, body: ChatRequest) -> ChatResponse:
         )
         return ChatResponse(
             reply=reply,
-            skill_used=body.skill,
+            skill_used=skill_used,
             model_used=body.model or deps.model_provider.default_model,
             session_id=body.session_id,
         )
@@ -217,7 +222,19 @@ async def chat_stream(request: Request, body: ChatRequest) -> EventSourceRespons
             from agent_platform.skills.builder import resolve_skill_tools
             from agent_platform.tools.registry import tool_map
 
-            declarative_tools = resolve_skill_tools(declarative, tool_map())
+            try:
+                declarative_tools = resolve_skill_tools(declarative, tool_map())
+            except RuntimeError as exc:
+                logger.warning(
+                    "声明式 Skill '%s' 配置无效，降级为通用对话: %s",
+                    skill_name,
+                    exc,
+                )
+                skill = None
+                declarative = None
+                target_type = "general"
+        if target_type == "general":
+            skill_name = "general"
         yield _sse(
             "routing",
             type="routing",

@@ -135,8 +135,68 @@ description: >-
             encoding="utf-8",
         )
 
-        with pytest.raises(ValueError, match="缺少顶层 'tools' 字段"):
-            DeclarativeSkillRegistry(tmp_path)
+        registry = DeclarativeSkillRegistry(tmp_path)
+
+        assert registry.count == 0
+        assert "缺少顶层 'tools' 字段" in registry.unavailable_skills["broken"]
+        with pytest.raises(RuntimeError, match="不可用"):
+            registry.load("broken")
+
+    def test_validator_isolates_invalid_skill(self, skills_dir):
+        from agent_platform.skills.registry import DeclarativeSkillRegistry
+
+        def reject_missing_tools(skill):
+            missing = [name for name in skill.tools if name != "read_file"]
+            if missing:
+                raise RuntimeError(f"工具未注册: {', '.join(missing)}")
+
+        registry = DeclarativeSkillRegistry(skills_dir, validator=reject_missing_tools)
+
+        assert registry.get("knowledge-graph-extraction") is None
+        assert registry.get("text-formatter") is not None
+        assert registry.count == 1
+        assert "knowledge-graph-extraction" in registry.unavailable_skills
+
+    def test_hot_reload_recovers_isolated_skill(self, tmp_path):
+        from agent_platform.skills.registry import DeclarativeSkillRegistry
+
+        skill_dir = tmp_path / "dynamic"
+        skill_dir.mkdir()
+        skill_md = skill_dir / "SKILL.md"
+        skill_md.write_text(
+            """---
+name: dynamic
+description: Dynamic skill
+tools: [missing_tool]
+---
+
+# Dynamic
+""",
+            encoding="utf-8",
+        )
+
+        def reject_missing_tools(skill):
+            if skill.tools:
+                raise RuntimeError("工具未注册")
+
+        registry = DeclarativeSkillRegistry(tmp_path, validator=reject_missing_tools)
+        assert registry.get("dynamic") is None
+        assert "dynamic" in registry.unavailable_skills
+
+        skill_md.write_text(
+            """---
+name: dynamic
+description: Dynamic skill
+tools: []
+---
+
+# Dynamic
+""",
+            encoding="utf-8",
+        )
+
+        assert registry.get("dynamic") is not None
+        assert registry.unavailable_skills == {}
 
     def test_hot_reloads_changed_skill_markdown(self, tmp_path):
         from agent_platform.skills.registry import DeclarativeSkillRegistry
@@ -191,7 +251,8 @@ class TestSkillAgentBuilder:
         assert "complete_task" in prompt
         assert "`read_file`" in prompt
         assert str(skill.source_dir) in prompt
-        assert "不要重新创建同用途的 `.py` 辅助脚本" in prompt
+        assert "不要把未经验证的假设当作执行结果" in prompt
+        assert "应优先复用这些现有内容" in prompt
 
     def test_max_tool_calls_replaced(self, skills_dir):
         from agent_platform.skills.registry import DeclarativeSkillRegistry
@@ -248,6 +309,16 @@ class TestSkillAgentBuilder:
 
         with pytest.raises(RuntimeError, match="没有绑定到 Agent.*read_file"):
             build_skill_agent(model, skill, tools=[], max_tool_calls=6)
+
+    def test_resolve_skill_tools_rejects_missing_complete_tool(self, skills_dir):
+        from agent_platform.skills.builder import resolve_skill_tools
+        from agent_platform.skills.registry import DeclarativeSkillRegistry
+
+        skill = DeclarativeSkillRegistry(skills_dir).load("text-formatter")
+        skill.complete_tool = "missing_complete"
+
+        with pytest.raises(RuntimeError, match="complete_tool 不存在.*missing_complete"):
+            resolve_skill_tools(skill, {})
 
 
 class TestCompleteTools:

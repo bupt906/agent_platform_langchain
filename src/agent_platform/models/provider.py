@@ -10,9 +10,8 @@ from agent_platform.config.settings import Settings
 
 logger = logging.getLogger(__name__)
 
-SUPPORTED_MODEL_PROVIDERS = ("volcengine", "deepseek", "qwen", "ollama", "openai")
+SUPPORTED_MODEL_PROVIDERS = ("deepseek", "qwen", "ollama", "openai")
 PROVIDER_DISPLAY_NAMES = {
-    "volcengine": "火山引擎方舟",
     "deepseek": "DeepSeek",
     "qwen": "通义千问",
     "ollama": "Ollama",
@@ -21,7 +20,7 @@ PROVIDER_DISPLAY_NAMES = {
 
 
 class ModelProvider:
-    """统一的多模型路由，支持火山引擎 / DeepSeek / Qwen / Ollama / OpenAI。"""
+    """统一的多模型路由，支持 DeepSeek / Qwen / Ollama / OpenAI。"""
 
     def __init__(self, settings: Settings, _cache: dict | None = None, _thinking: bool = False) -> None:
         self._settings = settings
@@ -75,7 +74,6 @@ class ModelProvider:
 
         cfg = self._settings.models
         base_urls = {
-            "volcengine": cfg.volcengine_base_url,
             "deepseek": cfg.deepseek_base_url,
             "qwen": cfg.qwen_base_url,
             "ollama": cfg.ollama_base_url,
@@ -87,19 +85,13 @@ class ModelProvider:
             "provider_name": PROVIDER_DISPLAY_NAMES[provider],
             "model_name": model_name,
             "base_url": base_urls[provider],
-            "api_mode": ("openai-responses" if provider == "volcengine" else "openai-chat-completions"),
+            "api_mode": "openai-chat-completions",
         }
 
     def model_identity_instruction(self, model_id: str | None = None) -> str:
         """生成供系统提示词使用的模型身份说明，避免模型自行猜测。"""
         info = self.describe_model(model_id)
-        if info["provider"] == "volcengine" and info["model_name"] == "ark-code-latest":
-            identity = (
-                "本次请求通过火山引擎方舟 Coding 网关的 ark-code-latest 路由；"
-                "底层模型由方舟配置决定，服务端未报告时不得猜测具体模型。"
-            )
-        else:
-            identity = f"本次请求的权威运行时模型是 {info['provider_name']} 提供的 {info['model_name']}。"
+        identity = f"本次请求的运行时模型是 {info['provider_name']} 提供的 {info['model_name']}。"
         return (
             f"{identity} 如果用户询问模型身份，必须依据此运行时信息回答，"
             "不要根据训练语料、客户端名称或兼容协议猜测其他供应商。"
@@ -121,14 +113,6 @@ class ModelProvider:
         model_name = info["model_name"]
         cfg = self._settings.models
 
-        if provider == "volcengine":
-            return ChatOpenAI(
-                model=model_name,
-                api_key=cfg.volcengine_api_key,
-                base_url=cfg.volcengine_base_url,
-                use_responses_api=True,
-                **opts,
-            )
         if provider == "deepseek":
             if thinking:
                 return ChatDeepSeek(

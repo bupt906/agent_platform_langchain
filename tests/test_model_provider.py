@@ -3,7 +3,11 @@ from __future__ import annotations
 import pytest
 
 from agent_platform.config.settings import Settings
-from agent_platform.models.provider import ModelProvider
+from agent_platform.models.provider import SUPPORTED_MODEL_PROVIDERS, ModelProvider
+
+
+def test_supported_model_providers() -> None:
+    assert SUPPORTED_MODEL_PROVIDERS == ("deepseek", "qwen", "ollama", "openai")
 
 
 def test_describe_deepseek_model_uses_deepseek_endpoint(

@@ -23,7 +23,6 @@ MODEL_PRESETS = tuple(
     dict.fromkeys(
         (
             settings.default_model,
-            "volcengine:ark-code-latest",
             "deepseek:deepseek-v4-pro",
             "qwen:qwen-plus",
             "openai:gpt-4o",

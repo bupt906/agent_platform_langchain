@@ -3,11 +3,14 @@ from __future__ import annotations
 import pytest
 from pydantic import ValidationError
 
+import agent_platform.core.router as router_module
 from agent_platform.core.registry import SkillRegistry
 from agent_platform.core.router import (
     RouterDecision,
     _build_invoke_config,
     _build_router_prompt,
+    _execute_declarative_skill_direct,
+    execute_decision,
 )
 from agent_platform.skills.registry import DeclarativeSkillRegistry
 
@@ -87,3 +90,78 @@ class TestInvokeConfig:
         cfg = _build_invoke_config("session-123")
         assert "configurable" in cfg
         assert cfg["configurable"]["thread_id"] == "session-123"
+
+
+def _build_unavailable_registry(tmp_path):
+    skill_dir = tmp_path / "broken"
+    skill_dir.mkdir()
+    (skill_dir / "SKILL.md").write_text(
+        """---
+name: broken
+description: Broken skill
+tools: [missing_tool]
+---
+
+# Broken
+""",
+        encoding="utf-8",
+    )
+
+    def reject_missing_tool(_skill):
+        raise RuntimeError("工具未注册: missing_tool")
+
+    return DeclarativeSkillRegistry(tmp_path, validator=reject_missing_tool)
+
+
+@pytest.mark.asyncio
+async def test_explicit_unavailable_skill_falls_back_to_general(tmp_path, deps, monkeypatch):
+    deps.declarative_registry = _build_unavailable_registry(tmp_path)
+
+    async def fake_general(message, _deps, _model_id, _invoke_cfg):
+        return f"general:{message}", {"prompt": 1, "completion": 1, "total": 2}
+
+    monkeypatch.setattr(router_module, "_general_response", fake_general)
+
+    reply, skill_used = await _execute_declarative_skill_direct("broken", "测试问题", deps)
+
+    assert reply == "general:测试问题"
+    assert skill_used == "general"
+
+
+@pytest.mark.asyncio
+async def test_auto_routed_unavailable_skill_falls_back_to_general(tmp_path, deps, monkeypatch):
+    deps.declarative_registry = _build_unavailable_registry(tmp_path)
+    decision = RouterDecision(skill_name="broken", rewritten_query="测试问题", confidence=0.9)
+
+    async def fake_general(message, _deps, _model_id, _invoke_cfg):
+        return f"general:{message}", {"prompt": 1, "completion": 1, "total": 2}
+
+    monkeypatch.setattr(router_module, "_general_response", fake_general)
+
+    reply = await execute_decision(decision, "测试问题", deps)
+
+    assert reply == "general:测试问题"
+    assert decision.skill_name == "general"
+
+
+@pytest.mark.asyncio
+async def test_runtime_skill_configuration_error_falls_back_to_general(deps, monkeypatch):
+    deps.declarative_registry = DeclarativeSkillRegistry()
+
+    async def fail_skill(*_args, **_kwargs):
+        raise RuntimeError("工具未注册: missing_tool")
+
+    async def fake_general(message, _deps, _model_id, _invoke_cfg):
+        return f"general:{message}", {"prompt": 1, "completion": 1, "total": 2}
+
+    monkeypatch.setattr(router_module, "_execute_declarative_skill", fail_skill)
+    monkeypatch.setattr(router_module, "_general_response", fake_general)
+
+    reply, skill_used = await _execute_declarative_skill_direct(
+        "knowledge-graph-extraction",
+        "测试问题",
+        deps,
+    )
+
+    assert reply == "general:测试问题"
+    assert skill_used == "general"

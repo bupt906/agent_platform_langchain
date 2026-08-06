@@ -31,15 +31,14 @@ COMPLETE_INSTRUCTION = """
 TOOL_USAGE_INSTRUCTION = """
 ## 运行时工具
 
-以下工具已真实绑定到当前 Agent，可直接访问服务端允许范围内的文件和命令：
+以下工具已绑定到当前 Agent：
 {tools}
 
-- 用户给出的本地路径是服务端文件路径。先调用 `read_file`、`bash` 等适用工具
-  实际检查，不要在尚未调用工具时声称无法访问，也不要先要求用户粘贴内容。
-- Skill 中列出的 `scripts/` 是现成的实现。需要脚本处理时，优先用 `bash`
-  运行这些脚本，不要重新创建同用途的 `.py` 辅助脚本。
-- 工具返回权限、路径或格式错误后，应向用户准确说明该工具错误，不能把它改写成
-  “模型无法访问服务器文件”。
+- 根据任务需要和工具说明选择工具，不要调用与当前任务无关的工具。
+- 涉及外部资源、环境状态或产生实际操作时，应通过适用工具获取或执行，
+  不要把未经验证的假设当作执行结果。
+- 工具返回失败时，应依据错误信息调整操作或向用户准确说明，不能声称操作已成功。
+- Skill 明确引用自身目录中的脚本、参考资料或资源时，应优先复用这些现有内容。
 {source_location}
 """
 
@@ -58,7 +57,9 @@ def build_skill_agent(
 
     complete_tool = get_complete_tool(skill.complete_tool)
     if complete_tool is None:
-        raise ValueError(f"Complete tool '{skill.complete_tool}' not registered for skill '{skill.name}'")
+        raise RuntimeError(
+            f"Skill '{skill.name}' 的结束工具未注册: {skill.complete_tool}"
+        )
 
     bound_tool_names = [tool.name for tool in tools]
     missing_tools = [name for name in skill.tools if name not in bound_tool_names]
@@ -84,10 +85,16 @@ def resolve_skill_tools(
     skill: DeclarativeSkill,
     registered_tools: Mapping[str, BaseTool],
 ) -> list[BaseTool]:
-    """按 Skill 声明解析工具，缺少任何一个都立即失败。"""
+    """解析并校验 Skill 声明的业务工具和结束工具。"""
+    from agent_platform.skills.complete import get_complete_tool
+
     missing_tools = [name for name in skill.tools if name not in registered_tools]
     if missing_tools:
         raise RuntimeError(f"Skill '{skill.name}' 的工具未注册: {', '.join(missing_tools)}")
+    if get_complete_tool(skill.complete_tool) is None:
+        raise RuntimeError(
+            f"Skill '{skill.name}' 配置的 complete_tool 不存在: {skill.complete_tool}"
+        )
     return [registered_tools[name] for name in skill.tools]
 
 
@@ -114,7 +121,7 @@ def _build_prompt(
     effective_tool_names = skill.tools if bound_tool_names is None else bound_tool_names
     tools = ", ".join(f"`{name}`" for name in effective_tool_names) or "（无）"
     source_location = (
-        f"- 当前 Skill 目录：`{skill.source_dir}`。其中的相对脚本路径应以此目录或项目根目录解析。"
+        f"- 当前 Skill 目录：`{skill.source_dir}`。Skill 中引用的相对路径应以此目录或项目根目录解析。"
         if skill.source_dir
         else ""
     )
