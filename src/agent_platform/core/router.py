@@ -321,7 +321,7 @@ def _build_invoke_config(session_id: str | None) -> dict:
 async def _load_session_messages(
     deps: PlatformDeps, session_id: str, max_turns: int = 10
 ) -> list:
-    """加载会话历史，转换为 LangChain 消息列表（正序，不含本轮）。
+    """加载最近 max_turns 轮会话历史，转换为 LangChain 消息列表（正序，不含本轮）。
 
     让声明式 Skill 也能感知多轮上下文，否则每次执行都只有当前一条
     消息，模型完全不知道之前的设计过程。
@@ -331,7 +331,11 @@ async def _load_session_messages(
     if not session_id or not deps.session_store:
         return []
     try:
-        history = await deps.session_store.get_session_history(session_id, limit=max_turns * 2)
+        # get_session_history 按条返回，一轮含 user + assistant 两条，
+        # 这里 limit 传入轮数 * 2 以取到完整的最近 max_turns 轮。
+        history = await deps.session_store.get_session_history(
+            session_id, limit=max_turns * 2
+        )
     except Exception:
         return []
     messages: list = []

@@ -1,6 +1,7 @@
 import { BrowserRouter, NavLink, Route, Routes } from "react-router-dom";
 import { BarChart3, ClipboardCheck, MessageSquareMore, Network } from "lucide-react";
 import Sidebar from "./components/Sidebar";
+import { ErrorBoundary } from "./components/ErrorBoundary";
 import ChatPage from "./pages/ChatPage";
 import DashboardPage from "./pages/DashboardPage";
 import ReviewTasksPage from "./pages/ReviewTasksPage";
@@ -16,8 +17,9 @@ const mobileLinks = [
 
 export default function App() {
   return (
-    <BrowserRouter>
-      <PreferencesProvider><div className="app-surface flex min-h-dvh">
+    <ErrorBoundary>
+      <BrowserRouter>
+        <PreferencesProvider><div className="app-surface flex min-h-dvh">
           <Sidebar />
           <main className="min-w-0 flex-1 overflow-hidden pb-16 lg:pb-0">
             <Routes>
@@ -36,7 +38,8 @@ export default function App() {
             ))}
           </nav>
       </div></PreferencesProvider>
-    </BrowserRouter>
+      </BrowserRouter>
+    </ErrorBoundary>
   );
 }
 

@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import { ArrowUp, Bot, BrainCircuit, ChevronDown, ChevronRight, CircleStop, FileSearch, GitBranch, LoaderCircle, Plus, Route, Sparkles, Wrench } from "lucide-react";
+import { ArrowUp, Bot, Boxes, BrainCircuit, ChevronDown, ChevronRight, CircleStop, FileSearch, GitBranch, LoaderCircle, Plus, Route, Sparkles, Wrench } from "lucide-react";
 import { useSSE, type SSEMessage } from "../hooks/useSSE";
-import { api, type SkillInfo } from "../lib/api";
+import { api, apiUrl, type SkillInfo } from "../lib/api";
 import { usePreferences } from "../hooks/usePreferences";
 
 const MAX_INPUT_LENGTH = 10_000;
@@ -12,7 +12,7 @@ const suggestedPrompts = [
 ];
 
 type Activity = { kind: "route" | "tool" | "status"; label: string; detail?: string };
-type ChatTurn = { id: string; role: "user" | "assistant"; content: string; reasoning: string; activities: Activity[]; pending?: boolean; stopped?: boolean; error?: string };
+type ChatTurn = { id: string; role: "user" | "assistant"; content: string; reasoning: string; activities: Activity[]; pending?: boolean; stopped?: boolean; error?: string; viewerPath?: string };
 
 function createTurn(role: ChatTurn["role"], content = ""): ChatTurn {
   return { id: crypto.randomUUID(), role, content, reasoning: "", activities: [] };
@@ -111,12 +111,50 @@ function Conversation({ turns }: { turns: ChatTurn[] }) {
       {turn.role === "assistant" && <p className="mb-2 text-xs font-medium text-slate-400">Agent Studio</p>}
       {turn.activities.length > 0 && <ActivityList items={turn.activities} />}
       {turn.reasoning && <Reasoning content={turn.reasoning} />}
+      {turn.viewerPath && <CadViewer path={turn.viewerPath} />}
       {turn.content && <div className={`whitespace-pre-wrap text-sm leading-7 ${turn.role === "user" ? "text-white" : "text-slate-700"}`}>{turn.content}</div>}
       {turn.pending && !turn.content && <LoadingReply />}
       {turn.stopped && <p className="mt-2 text-xs text-slate-400">已停止生成</p>}
       {turn.error && <p className="mt-2 rounded-lg bg-rose-50 px-3 py-2 text-xs text-rose-600">{turn.error}</p>}
     </div>
   </div>)}</div>;
+}
+
+function CadViewer({ path }: { path: string }) {
+  const [expanded, setExpanded] = useState(false);
+  const [containerWidth, setContainerWidth] = useState(0);
+  const containerRef = useRef<HTMLDivElement>(null);
+  const src = `${apiUrl("/viewer")}?path=${encodeURIComponent(path)}`;
+
+  // viewer 基准宽度：容纳画布 + 396px spec 抽屉 + 模式按钮
+  const VIEWER_BASE_W = 1100;
+  const VIEWER_BASE_H = 620;
+  const scale = containerWidth > 0 ? Math.min(1, containerWidth / VIEWER_BASE_W) : 1;
+
+  useEffect(() => {
+    if (!expanded || !containerRef.current) return;
+    const measure = () => setContainerWidth(containerRef.current?.clientWidth ?? 0);
+    measure();
+    window.addEventListener("resize", measure);
+    return () => window.removeEventListener("resize", measure);
+  }, [expanded]);
+
+  return <div className="mb-3 overflow-hidden rounded-xl border border-slate-200 bg-white shadow-sm">
+    <div className="flex items-center justify-between border-b border-slate-100 bg-slate-50/80 px-3 py-2">
+      <span className="flex items-center gap-1.5 text-xs font-medium text-slate-500"><Boxes size={14} className="text-blue-500" />3D CAD 模型</span>
+      <button onClick={() => setExpanded(!expanded)} className="rounded-md px-2 py-0.5 text-[11px] font-medium text-slate-500 transition hover:bg-white hover:text-slate-700">{expanded ? "收起" : "展开"}</button>
+    </div>
+    {expanded && (
+      <div ref={containerRef} className="overflow-hidden" style={{ height: VIEWER_BASE_H * scale }}>
+        <iframe
+          src={src}
+          title="CAD 3D Viewer"
+          className="origin-top-left border-0"
+          style={{ width: VIEWER_BASE_W, height: VIEWER_BASE_H, transform: `scale(${scale})` }}
+        />
+      </div>
+    )}
+  </div>;
 }
 
 function Composer({ input, setInput, inputRef, isStreaming, onSend, onStop, selectedAgent, setSelectedAgent, selectedSkill, setSelectedSkill, agentChoices, skillChoices, thinking, setThinking, skillsError }: { input: string; setInput: (value: string) => void; inputRef: React.RefObject<HTMLTextAreaElement | null>; isStreaming: boolean; onSend: () => void; onStop: () => void; selectedAgent: string; setSelectedAgent: (value: string) => void; selectedSkill: string; setSelectedSkill: (value: string) => void; agentChoices: SkillInfo[]; skillChoices: { name: string; description: string }[]; thinking: boolean; setThinking: (value: boolean) => void; skillsError: boolean }) {
@@ -143,6 +181,7 @@ function applyEvents(turn: ChatTurn, events: SSEMessage[]): ChatTurn {
     if (event.type === "tool_error") next.activities.push({ kind: "status", label: `${event.tool || "工具"} 调用失败`, detail: event.error });
     if (event.type === "error") next.error = event.error || "请求发生错误，请稍后重试。";
     if (event.type === "done") next.pending = false;
+    if (event.type === "cad_viewer" && event.path) next.viewerPath = event.path;
   }
   return next;
 }

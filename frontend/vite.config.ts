@@ -14,6 +14,7 @@ export default defineConfig({
       "^/review$": "http://localhost:8000",
       "/api/callback": "http://localhost:8000",
       "/preferences": "http://localhost:8000",
+      "/viewer": "http://localhost:8000",
     },
   },
 });

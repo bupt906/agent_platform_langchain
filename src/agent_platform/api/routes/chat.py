@@ -6,11 +6,13 @@ from collections.abc import Iterator, Mapping
 from dataclasses import replace
 from typing import Any
 
-from fastapi import APIRouter, Request
+from fastapi import APIRouter, HTTPException, Request
+from fastapi.responses import HTMLResponse
 from langchain_core.messages import HumanMessage, SystemMessage
 from sse_starlette.sse import EventSourceResponse
 
 from agent_platform.api.schemas import ChatRequest, ChatResponse
+from agent_platform.config.settings import settings
 from agent_platform.core.deps import PlatformDeps
 from agent_platform.core.router import (
     RouterDecision,
@@ -29,6 +31,31 @@ router = APIRouter()
 
 def _get_deps(request: Request) -> PlatformDeps:
     return request.app.state.deps
+
+
+@router.get("/viewer", response_class=HTMLResponse)
+async def viewer_html(path: str):
+    """返回 agentcad 生成的 3D viewer.html 内容，供前端 iframe 展示。
+
+    Args:
+        path: viewer.html 的路径（相对允许根目录，如 `cad_output/v1/viewer.html`）。
+    """
+    from pathlib import Path
+
+    # 解析为允许根目录内的绝对路径，防止路径穿越
+    requested = Path(path).expanduser()
+    if not requested.is_absolute():
+        requested = Path.cwd() / requested
+    resolved = requested.resolve()
+
+    allowed_roots = [Path(r).expanduser().resolve() for r in settings.file_read_allowed_roots.split(",") if r.strip()]
+    if not allowed_roots or not any(resolved.is_relative_to(root) for root in allowed_roots):
+        raise HTTPException(status_code=403, detail="路径不在允许目录内")
+    if resolved.suffix.lower() != ".html":
+        raise HTTPException(status_code=400, detail="仅支持 .html 文件")
+    if not resolved.exists():
+        raise HTTPException(status_code=404, detail="viewer 文件不存在")
+    return HTMLResponse(resolved.read_text(encoding="utf-8"))
 
 
 async def _apply_saved_preferences(body: ChatRequest, deps: PlatformDeps) -> ChatRequest:
@@ -220,6 +247,8 @@ async def chat_stream(request: Request, body: ChatRequest) -> EventSourceRespons
             )
             input_messages = [*history_messages, HumanMessage(content=effective_body.message)]
 
+            # 捕获 complete_task 的 summary 作为最终回复，用于持久化多轮历史
+            final_reply = ""
             try:
                 async for event in agent.astream_events(
                     {"messages": input_messages},
@@ -234,12 +263,23 @@ async def chat_stream(request: Request, body: ChatRequest) -> EventSourceRespons
                                 content=content,
                             )
                     else:
+                        # 检测 agentcad run 生成的 viewer，发给前端展示
+                        # 必须在 tool_event 判断之前，确保 complete_task 的
+                        # on_tool_start（含 VIEWER_PATH）也能被检测到。
+                        viewer_path = _extract_viewer_path(event)
+                        if viewer_path:
+                            yield _sse("cad_viewer", type="cad_viewer", path=viewer_path)
+
                         tool_event = _tool_event_data(event)
                         if tool_event:
                             event_type, data = tool_event
                             yield _sse(event_type, **data)
                         elif event["event"] == "on_chat_model_end":
                             yield _sse("model_end", **_model_end_data(event))
+
+                        reply_part = _extract_final_reply(event)
+                        if reply_part:
+                            final_reply = reply_part
             except Exception as exc:
                 logger.exception("声明式 Skill '%s' 流式执行失败", declarative.name)
                 yield _sse(
@@ -248,6 +288,19 @@ async def chat_stream(request: Request, body: ChatRequest) -> EventSourceRespons
                     error=f"{type(exc).__name__}: {exc}",
                 )
                 return
+
+            # 持久化本轮对话，多轮记忆才能生效
+            if deps.session_store and effective_body.session_id:
+                try:
+                    await deps.session_store.add_turn(
+                        session_id=effective_body.session_id,
+                        user_message=effective_body.message,
+                        assistant_message=final_reply or "",
+                        skill_used=skill_name,
+                        tokens_used=0,
+                    )
+                except Exception:
+                    logger.warning("流式持久化对话记录失败", exc_info=True)
 
         else:
             # 使用 Python Agent
@@ -337,6 +390,94 @@ def _tool_preview(value: Any) -> str:
     if isinstance(compact, str):
         return compact
     return json.dumps(compact, ensure_ascii=False, default=str)
+
+
+def _extract_final_reply(event: Mapping[str, Any]) -> str:
+    """从 complete_task 工具事件中提取最终回复（summary）。
+
+    声明式 Skill 的最终结果由 complete_task 的 summary 承载。流式路径
+    需要它来持久化多轮对话历史（add_turn）。
+    """
+    if event.get("event") != "on_tool_start":
+        return ""
+    if str(event.get("name") or "") != "complete_task":
+        return ""
+    data = event.get("data") or {}
+    candidate = data.get("input")
+    if candidate is None:
+        return ""
+    if not isinstance(candidate, (str, dict)):
+        try:
+            candidate = candidate.content
+        except Exception:
+            pass
+    if isinstance(candidate, dict):
+        return str(candidate.get("summary") or "")
+    try:
+        parsed = json.loads(candidate)
+        if isinstance(parsed, dict):
+            return str(parsed.get("summary") or "")
+    except (json.JSONDecodeError, TypeError):
+        pass
+    return ""
+
+
+def _extract_viewer_path(event: Mapping[str, Any]) -> str:
+    """提取 agentcad 生成的 viewer 路径，供前端 iframe 展示。
+
+    两条来源：
+    1. bash 工具 on_tool_end：输出是 `{"success":..., "stdout":...}` 的 JSON，
+       其中 `stdout` 里才是 agentcad run 的 JSON（含 `viewer` 字段）。
+    2. complete_task 工具 on_tool_start：输入里的 detail 含 `VIEWER_PATH: xxx` 行。
+    """
+    data = event.get("data") or {}
+    event_name = event.get("event")
+
+    # 统一收集要检查的文本：on_tool_end 看 output，on_tool_start 看 input
+    candidate = ""
+    if event_name == "on_tool_end":
+        candidate = data.get("output")
+    elif event_name == "on_tool_start":
+        candidate = data.get("input")
+    if candidate is None:
+        return ""
+
+    # on_tool_end 的 output 可能是 ToolMessage，取其 .content（才是 JSON 字符串）
+    if not isinstance(candidate, (str, dict)):
+        try:
+            candidate = candidate.content
+        except Exception:
+            pass
+    text = candidate if isinstance(candidate, str) else str(candidate)
+
+    # 第一层：外层 JSON（bash 包装 或 complete_task input JSON）
+    inner_text = text
+    try:
+        outer = json.loads(text)
+        if isinstance(outer, dict):
+            if outer.get("viewer"):
+                return str(outer["viewer"])
+            # bash 包装：取 stdout；complete_task：取 detail
+            inner_text = outer.get("stdout") or outer.get("detail") or outer.get("content") or inner_text
+    except (json.JSONDecodeError, TypeError):
+        # candidate 本身可能是 dict（langchain on_tool_start 的 input 结构）
+        if isinstance(candidate, dict):
+            inner_text = candidate.get("detail") or candidate.get("content") or str(candidate)
+
+    # 第二层：agentcad run 的 JSON
+    try:
+        inner = json.loads(inner_text)
+        if isinstance(inner, dict) and inner.get("viewer"):
+            return str(inner["viewer"])
+    except (json.JSONDecodeError, TypeError):
+        pass
+
+    # 兜底：找 VIEWER_PATH: xxx 行
+    for line in inner_text.splitlines():
+        line = line.strip()
+        if line.startswith("VIEWER_PATH:"):
+            return line.split(":", 1)[1].strip()
+    return ""
 
 
 def _tool_event_data(event: Mapping[str, Any]) -> tuple[str, dict[str, Any]] | None:

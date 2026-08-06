@@ -15,7 +15,32 @@
 这不是"写死一个 Python 工具"式集成，而是 **agentcad 官方推荐的 skill 集成方式**
 （其 SKILL.md 同样声明 `allowed-tools: Bash(agentcad:*)`）。
 
-## 一、在服务器上安装 agentcad
+## 零、一键安装（推荐）
+
+仓库自带一键安装脚本，clone 后运行即可自动创建 agentcad 环境：
+
+**Windows（PowerShell）：**
+```powershell
+powershell -ExecutionPolicy Bypass -File setup_agentcad.ps1
+```
+
+**Linux/macOS：**
+```bash
+bash setup_agentcad.sh
+```
+
+脚本会自动：
+1. 定位 conda（Anaconda/Miniconda）
+2. 创建 `agentcad-py312` 环境（Python 3.12）
+3. `pip install agentcad`
+4. 验证安装
+
+**skill 的 SKILL.md 会通过 `find_agentcad.py` 自动探测 agentcad 路径**，
+无需手动配置路径。
+
+## 一、手动安装 agentcad（可选）
+
+如果不想用一键脚本，也可以手动装：
 
 agentcad 要求 **Python 3.10–3.12**（OpenCascade 绑定不支持 3.13+）。
 

@@ -26,15 +26,16 @@ async def list_skills(request: Request) -> SkillListResponse:
     ]
 
     # 合并声明式 Skill（skills/ 目录下的 SKILL.md），前端下拉菜单才能
-    # 选择它们。声明式 skill 无 examples，用 tools 补充展示。
+    # 选择它们。声明式 skill 无示例问题，用 tools 字段展示其可用工具。
     if deps.declarative_registry:
         for d in deps.declarative_registry.list_skills():
             items.append(
                 SkillInfoResponse(
                     name=d.name,
                     description=d.description,
-                    examples=[f"tools: {', '.join(d.tools)}"],
+                    examples=[],
                     dependencies=[],
+                    tools=d.tools,
                 )
             )
 
