@@ -343,10 +343,13 @@ def _prepare_inline_target_message(
 
     command = parts[0].lower()
     target_name = parts[1]
-    if target_name.lower() in {"auto", "off", "none"}:
-        return None
 
     if command in {"/skill", "/s"}:
+        if target_name.lower() in {"auto", "off", "none", "general"}:
+            state.skill = None
+            state.agent = None
+            print("Skill 已清除，当前使用自动路由。", file=output)
+            return " ".join(parts[2:]).strip()
         state.skill = target_name
         state.agent = None
         print(f"Skill 已切换：{state.skill}", file=output)
@@ -427,7 +430,7 @@ def handle_command(
     elif command in {"/skill", "/s"}:
         if not value:
             print(f"当前 Skill：{state.skill or '自动路由'}", file=output)
-        elif value.lower() in {"auto", "off", "none"}:
+        elif value.lower() in {"auto", "off", "none", "general"}:
             state.skill = None
             state.agent = None
             print("Skill 已清除，当前使用自动路由。", file=output)

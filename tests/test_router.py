@@ -9,7 +9,6 @@ from agent_platform.core.router import (
     RouterDecision,
     _build_invoke_config,
     _build_router_prompt,
-    _execute_declarative_skill_direct,
     execute_decision,
 )
 from agent_platform.skills.registry import DeclarativeSkillRegistry
@@ -114,24 +113,25 @@ tools: [missing_tool]
 
 
 @pytest.mark.asyncio
-async def test_explicit_unavailable_skill_falls_back_to_general(tmp_path, deps, monkeypatch):
+async def test_unavailable_skill_falls_back_to_general(tmp_path, deps, monkeypatch):
     deps.declarative_registry = _build_unavailable_registry(tmp_path)
+    decision = RouterDecision(skill_name="broken", rewritten_query="测试问题", confidence=1.0)
 
     async def fake_general(message, _deps, _model_id, _invoke_cfg):
         return f"general:{message}", {"prompt": 1, "completion": 1, "total": 2}
 
     monkeypatch.setattr(router_module, "_general_response", fake_general)
 
-    reply, skill_used = await _execute_declarative_skill_direct("broken", "测试问题", deps)
+    reply = await execute_decision(decision, "测试问题", deps)
 
     assert reply == "general:测试问题"
-    assert skill_used == "general"
+    assert decision.skill_name == "general"
 
 
 @pytest.mark.asyncio
-async def test_auto_routed_unavailable_skill_falls_back_to_general(tmp_path, deps, monkeypatch):
-    deps.declarative_registry = _build_unavailable_registry(tmp_path)
-    decision = RouterDecision(skill_name="broken", rewritten_query="测试问题", confidence=0.9)
+async def test_unknown_skill_falls_back_to_general(deps, monkeypatch):
+    deps.declarative_registry = DeclarativeSkillRegistry()
+    decision = RouterDecision(skill_name="missing-skill", rewritten_query="测试问题", confidence=0.9)
 
     async def fake_general(message, _deps, _model_id, _invoke_cfg):
         return f"general:{message}", {"prompt": 1, "completion": 1, "total": 2}
@@ -157,11 +157,12 @@ async def test_runtime_skill_configuration_error_falls_back_to_general(deps, mon
     monkeypatch.setattr(router_module, "_execute_declarative_skill", fail_skill)
     monkeypatch.setattr(router_module, "_general_response", fake_general)
 
-    reply, skill_used = await _execute_declarative_skill_direct(
-        "knowledge-graph-extraction",
-        "测试问题",
-        deps,
+    decision = RouterDecision(
+        skill_name="knowledge-graph-extraction",
+        rewritten_query="测试问题",
+        confidence=1.0,
     )
+    reply = await execute_decision(decision, "测试问题", deps)
 
     assert reply == "general:测试问题"
-    assert skill_used == "general"
+    assert decision.skill_name == "general"

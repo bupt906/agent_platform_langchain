@@ -16,14 +16,6 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 
-def _declarative_skill_unavailable(deps: PlatformDeps, skill_name: str) -> bool:
-    """判断声明式 Skill 是否因配置错误被注册中心隔离。"""
-    return bool(
-        deps.declarative_registry
-        and skill_name in deps.declarative_registry.unavailable_skills
-    )
-
-
 class RouterDecision(BaseModel):
     """路由决策结果。"""
 
@@ -179,14 +171,12 @@ async def execute_decision(
                     declarative_selected = True
                     reply, tokens = await _execute_declarative_skill(declarative, message, deps, model_id, invoke_cfg)
                     decision.skill_name = f"skill:{declarative.name}"
-                elif _declarative_skill_unavailable(deps, decision.skill_name):
-                    logger.warning("声明式 Skill '%s' 不可用，降级为通用对话", decision.skill_name)
-                    decision.skill_name = "general"
-                    reply, tokens = await _general_response(message, deps, model_id, invoke_cfg)
                 elif decision.skill_name == "general":
                     reply, tokens = await _general_response(message, deps, model_id, invoke_cfg)
                 else:
-                    raise ValueError(f"自动路由选择了未注册的 Skill '{decision.skill_name}'")
+                    logger.warning("自动路由选择了未注册的 Skill '%s'，降级为通用对话", decision.skill_name)
+                    decision.skill_name = "general"
+                    reply, tokens = await _general_response(message, deps, model_id, invoke_cfg)
     except RuntimeError as e:
         error = str(e)
         if declarative_selected:
@@ -414,38 +404,6 @@ async def _general_response(
         config=invoke_cfg or {},
     )
     return result.content, _extract_tokens_from_message(result)
-
-
-async def _execute_declarative_skill_direct(
-    skill_name: str,
-    message: str,
-    deps: PlatformDeps,
-    *,
-    model_id: str | None = None,
-    session_id: str | None = None,
-) -> tuple[str, str]:
-    """跳过路由，直接执行声明式 Skill。"""
-    if not deps.declarative_registry:
-        return "声明式 Skill 系统未启用", skill_name
-
-    skill = deps.declarative_registry.get(skill_name)
-    if not skill:
-        if _declarative_skill_unavailable(deps, skill_name):
-            logger.warning("声明式 Skill '%s' 不可用，降级为通用对话", skill_name)
-            invoke_cfg = _build_invoke_config(session_id)
-            reply, _ = await _general_response(message, deps, model_id, invoke_cfg)
-            return reply, "general"
-        available = [s.name for s in (deps.declarative_registry.list_skills() or [])]
-        return f"未找到声明式 Skill: {skill_name}。可用: {', '.join(available)}", skill_name
-
-    invoke_cfg = _build_invoke_config(session_id)
-    try:
-        reply, _ = await _execute_declarative_skill(skill, message, deps, model_id, invoke_cfg)
-        return reply, skill_name
-    except RuntimeError as exc:
-        logger.warning("声明式 Skill '%s' 执行失败，降级为通用对话: %s", skill_name, exc, exc_info=True)
-        reply, _ = await _general_response(message, deps, model_id, invoke_cfg)
-        return reply, "general"
 
 
 # ── 向后兼容 ──────────────────────────────────────────────────

@@ -14,8 +14,6 @@ from agent_platform.api.schemas import ChatRequest, ChatResponse
 from agent_platform.core.deps import PlatformDeps
 from agent_platform.core.router import (
     RouterDecision,
-    _declarative_skill_unavailable,
-    _execute_declarative_skill_direct,
     execute_decision,
     execute_skill_direct,
     resolve_route,
@@ -36,7 +34,10 @@ def _resolve_single_target(
     skill_name: str,
     explicit_mode: str = "",
 ) -> tuple[Any | None, Any | None, str]:
-    """解析单路由目标；不可用 Skill 降级为通用对话，未知 Skill 立即报错。"""
+    """解析单路由目标；不可用或未知的声明式 Skill 降级为通用对话。"""
+    if skill_name == "general" and explicit_mode != "agent":
+        return None, None, "general"
+
     if explicit_mode == "agent":
         skill = deps.skill_registry.get(skill_name)
         if not skill:
@@ -47,14 +48,8 @@ def _resolve_single_target(
     if explicit_mode == "skill":
         declarative = deps.declarative_registry.get(skill_name) if deps.declarative_registry else None
         if not declarative:
-            if _declarative_skill_unavailable(deps, skill_name):
-                return None, None, "general"
-            available = (
-                ", ".join(s.name for s in deps.declarative_registry.list_skills())
-                if deps.declarative_registry
-                else "无"
-            )
-            raise ValueError(f"声明式 Skill '{skill_name}' 不存在；可用 Skill: {available}")
+            logger.warning("声明式 Skill '%s' 不可用，降级为通用对话", skill_name)
+            return None, None, "general"
         return None, declarative, "skill"
 
     skill = deps.skill_registry.get(skill_name)
@@ -63,12 +58,11 @@ def _resolve_single_target(
     declarative = deps.declarative_registry.get(skill_name) if deps.declarative_registry else None
     if declarative:
         return None, declarative, "skill"
-    if _declarative_skill_unavailable(deps, skill_name):
-        return None, None, "general"
     if skill_name == "general":
         return None, None, "general"
 
-    raise ValueError(f"自动路由选择了未注册的 Skill '{skill_name}'")
+    logger.warning("自动路由选择了未注册的 Skill '%s'，降级为通用对话", skill_name)
+    return None, None, "general"
 
 
 async def _apply_saved_preferences(body: ChatRequest, deps: PlatformDeps) -> ChatRequest:
@@ -124,8 +118,13 @@ async def chat(request: Request, body: ChatRequest) -> ChatResponse:
         )
 
     if body.skill:
-        reply, skill_used = await _execute_declarative_skill_direct(
-            body.skill,
+        decision = RouterDecision(
+            skill_name=body.skill,
+            rewritten_query=body.message,
+            confidence=1.0,
+        )
+        reply = await execute_decision(
+            decision,
             body.message,
             deps,
             model_id=body.model,
@@ -133,7 +132,7 @@ async def chat(request: Request, body: ChatRequest) -> ChatResponse:
         )
         return ChatResponse(
             reply=reply,
-            skill_used=skill_used,
+            skill_used=decision.skill_name,
             model_used=body.model or deps.model_provider.default_model,
             session_id=body.session_id,
         )

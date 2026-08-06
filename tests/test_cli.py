@@ -369,6 +369,17 @@ def test_handle_command_restores_default_model_and_auto_route() -> None:
     assert "已恢复自动路由" in output.getvalue()
 
 
+def test_handle_command_treats_general_skill_as_auto_route() -> None:
+    state = cli.CLIState(skill="knowledge-graph-extraction")
+    output = StringIO()
+
+    cli.handle_command("/skill general", state, output=output)
+
+    assert state.agent is None
+    assert state.skill is None
+    assert "当前使用自动路由" in output.getvalue()
+
+
 def test_interactive_mode_applies_changed_settings_to_following_messages(monkeypatch) -> None:
     messages = iter(
         [
@@ -451,6 +462,27 @@ def test_interactive_skill_command_can_send_message_inline(monkeypatch) -> None:
     assert calls[0][0] == "从 ./test_KG/test_medical.txt 抽取知识图谱"
     assert calls[0][1]["agent"] is None
     assert calls[0][1]["skill"] == "knowledge-graph-extraction"
+
+
+def test_interactive_general_skill_restores_auto_route(monkeypatch) -> None:
+    messages = iter(["/skill general 普通问题", "/exit"])
+    calls = []
+    monkeypatch.setattr(
+        cli,
+        "stream_chat",
+        lambda message, **kwargs: calls.append((message, kwargs)),
+    )
+
+    cli.run_interactive(
+        session_id="session-inline-general",
+        input_func=lambda _prompt: next(messages),
+        output=StringIO(),
+        error=StringIO(),
+    )
+
+    assert calls[0][0] == "普通问题"
+    assert calls[0][1]["agent"] is None
+    assert calls[0][1]["skill"] is None
 
 
 def test_whoami_displays_full_provider_and_endpoint() -> None:

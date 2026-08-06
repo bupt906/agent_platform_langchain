@@ -39,23 +39,39 @@ async def test_resolve_single_target_finds_declarative_skill(deps) -> None:
 
 
 @pytest.mark.asyncio
-async def test_resolve_single_target_rejects_unknown_auto_route(deps) -> None:
+async def test_resolve_single_target_falls_back_for_unknown_auto_route(deps) -> None:
     deps.declarative_registry = DeclarativeSkillRegistry()
 
-    with pytest.raises(ValueError, match="未注册"):
-        _resolve_single_target(deps, "knowledge-graph-extractoin")
+    agent, skill, target_type = _resolve_single_target(deps, "knowledge-graph-extractoin")
+
+    assert agent is None
+    assert skill is None
+    assert target_type == "general"
 
 
 @pytest.mark.asyncio
-async def test_resolve_single_target_rejects_unknown_explicit_skill(deps) -> None:
+async def test_resolve_single_target_falls_back_for_unknown_explicit_skill(deps) -> None:
     deps.declarative_registry = DeclarativeSkillRegistry()
 
-    with pytest.raises(ValueError, match="可用 Skill.*knowledge-graph-extraction"):
-        _resolve_single_target(
-            deps,
-            "missing-skill",
-            explicit_mode="skill",
-        )
+    agent, skill, target_type = _resolve_single_target(
+        deps,
+        "missing-skill",
+        explicit_mode="skill",
+    )
+
+    assert agent is None
+    assert skill is None
+    assert target_type == "general"
+
+
+def test_resolve_single_target_treats_explicit_general_as_general(deps) -> None:
+    deps.declarative_registry = DeclarativeSkillRegistry()
+
+    agent, skill, target_type = _resolve_single_target(deps, "general", explicit_mode="skill")
+
+    assert agent is None
+    assert skill is None
+    assert target_type == "general"
 
 
 def test_resolve_single_target_falls_back_for_unavailable_skill(tmp_path, deps) -> None:
