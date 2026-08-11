@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 import logging
 from collections.abc import AsyncIterator, Iterator, Mapping
-from dataclasses import replace
+from dataclasses import dataclass, replace
 from typing import Any
 
 from fastapi import APIRouter, Request
@@ -25,6 +25,15 @@ logger = logging.getLogger(__name__)
 router = APIRouter()
 
 
+@dataclass(frozen=True)
+class SingleTargetResolution:
+    agent: Any | None
+    declarative_skill: Any | None
+    target_type: str
+    requested_skill: str | None = None
+    fallback_reason: str | None = None
+
+
 def _get_deps(request: Request) -> PlatformDeps:
     return request.app.state.deps
 
@@ -33,36 +42,44 @@ def _resolve_single_target(
     deps: PlatformDeps,
     skill_name: str,
     explicit_mode: str = "",
-) -> tuple[Any | None, Any | None, str]:
+) -> SingleTargetResolution:
     """解析单路由目标；不可用或未知的声明式 Skill 降级为通用对话。"""
     if skill_name == "general" and explicit_mode != "agent":
-        return None, None, "general"
+        return SingleTargetResolution(None, None, "general")
 
     if explicit_mode == "agent":
         skill = deps.skill_registry.get(skill_name)
         if not skill:
             available = ", ".join(deps.skill_registry.skill_names()) or "无"
             raise ValueError(f"Python Agent '{skill_name}' 不存在；可用 Agent: {available}")
-        return skill, None, "agent"
+        return SingleTargetResolution(skill, None, "agent")
 
     if explicit_mode == "skill":
         declarative = deps.declarative_registry.get(skill_name) if deps.declarative_registry else None
         if not declarative:
-            logger.warning("声明式 Skill '%s' 不可用，降级为通用对话", skill_name)
-            return None, None, "general"
-        return None, declarative, "skill"
+            unavailable_reason = (
+                deps.declarative_registry.unavailable_skills.get(skill_name) if deps.declarative_registry else None
+            )
+            reason = f"declarative_skill_unavailable: {unavailable_reason}" if unavailable_reason else "skill_not_found"
+            logger.warning("声明式 Skill '%s' 不可用，降级为通用对话: %s", skill_name, reason)
+            return SingleTargetResolution(None, None, "general", skill_name, reason)
+        return SingleTargetResolution(None, declarative, "skill")
 
     skill = deps.skill_registry.get(skill_name)
     if skill:
-        return skill, None, "agent"
+        return SingleTargetResolution(skill, None, "agent")
     declarative = deps.declarative_registry.get(skill_name) if deps.declarative_registry else None
     if declarative:
-        return None, declarative, "skill"
+        return SingleTargetResolution(None, declarative, "skill")
     if skill_name == "general":
-        return None, None, "general"
+        return SingleTargetResolution(None, None, "general")
 
-    logger.warning("自动路由选择了未注册的 Skill '%s'，降级为通用对话", skill_name)
-    return None, None, "general"
+    unavailable_reason = (
+        deps.declarative_registry.unavailable_skills.get(skill_name) if deps.declarative_registry else None
+    )
+    reason = f"declarative_skill_unavailable: {unavailable_reason}" if unavailable_reason else "skill_not_found"
+    logger.warning("自动路由目标 Skill '%s' 不可用，降级为通用对话: %s", skill_name, reason)
+    return SingleTargetResolution(None, None, "general", skill_name, reason)
 
 
 async def _apply_saved_preferences(body: ChatRequest, deps: PlatformDeps) -> ChatRequest:
@@ -99,6 +116,8 @@ async def chat(request: Request, body: ChatRequest) -> ChatResponse:
             skill_used="general",
             model_used=body.model or deps.model_provider.default_model,
             session_id=body.session_id,
+            requested_skill=decision.requested_skill_name,
+            fallback_reason=decision.fallback_reason,
         )
 
     # ── 显式指定：agent / skill 二选一 ──
@@ -135,6 +154,8 @@ async def chat(request: Request, body: ChatRequest) -> ChatResponse:
             skill_used=decision.skill_name,
             model_used=body.model or deps.model_provider.default_model,
             session_id=body.session_id,
+            requested_skill=decision.requested_skill_name,
+            fallback_reason=decision.fallback_reason,
         )
 
     # 自动路由
@@ -151,6 +172,8 @@ async def chat(request: Request, body: ChatRequest) -> ChatResponse:
         skill_used=decision.skill_name,
         model_used=body.model or deps.model_provider.default_model,
         session_id=body.session_id,
+        requested_skill=decision.requested_skill_name,
+        fallback_reason=decision.fallback_reason,
     )
 
 
@@ -168,7 +191,7 @@ async def chat_stream(request: Request, body: ChatRequest) -> EventSourceRespons
             deps,
             model_provider=deps.model_provider.with_thinking(effective_body.thinking),
         )
-        model_info = stream_deps.model_provider.describe_model(effective_body.model)
+        model_info = stream_deps.model_provider.describe_public_model(effective_body.model)
         yield _sse("model_info", type="model_info", **model_info)
 
         # ── 显式指定 agent / skill / 自动路由 ──
@@ -211,11 +234,16 @@ async def chat_stream(request: Request, body: ChatRequest) -> EventSourceRespons
             return
 
         # ── 单技能 / 通用流式 ──
-        skill, declarative, target_type = _resolve_single_target(
+        target = _resolve_single_target(
             deps,
             skill_name,
             explicit_mode,
         )
+        skill = target.agent
+        declarative = target.declarative_skill
+        target_type = target.target_type
+        requested_skill = target.requested_skill
+        fallback_reason = target.fallback_reason
         declarative_tools = []
         if declarative:
             from agent_platform.skills.builder import resolve_skill_tools
@@ -232,6 +260,8 @@ async def chat_stream(request: Request, body: ChatRequest) -> EventSourceRespons
                 skill = None
                 declarative = None
                 target_type = "general"
+                requested_skill = skill_name
+                fallback_reason = f"declarative_skill_configuration_error: {exc}"
         if target_type == "general":
             skill_name = "general"
         yield _sse(
@@ -243,6 +273,8 @@ async def chat_stream(request: Request, body: ChatRequest) -> EventSourceRespons
             mode=decision.mode if decision else "single",
             confidence=decision.confidence if decision else 1.0,
             tools=[tool.name for tool in declarative_tools],
+            requested_skill=requested_skill,
+            fallback_reason=fallback_reason,
         )
 
         if not skill and not declarative:

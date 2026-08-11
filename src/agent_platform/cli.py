@@ -168,10 +168,9 @@ def stream_chat(
                     if not show_model_info:
                         continue
                     model_id = data.get("model_id", "unknown")
-                    base_url = data.get("base_url", "unknown")
                     api_mode = data.get("api_mode", "unknown")
                     stream.write(f"[模型] {model_id}\n")
-                    stream.write(f"[Endpoint] {base_url} ({api_mode})\n")
+                    stream.write(f"[协议] {api_mode}\n")
                     stream.flush()
                     wrote_content = True
                     current_section = "model_info"
@@ -186,6 +185,10 @@ def stream_chat(
                     tools = data.get("tools")
                     if isinstance(tools, list) and tools:
                         suffix += f" · tools={','.join(str(name) for name in tools)}"
+                    fallback_reason = data.get("fallback_reason")
+                    requested_skill = data.get("requested_skill")
+                    if fallback_reason:
+                        suffix += f" · fallback={requested_skill or 'unknown'} ({fallback_reason})"
                     stream.write(f"[路由] {source} → {target_type}:{skill_name}{suffix}\n")
                     stream.flush()
                     wrote_content = True

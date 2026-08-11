@@ -71,3 +71,33 @@ async def test_skills_endpoint_lists_agents_and_declarative_skills(deps) -> None
     ]
     assert items["knowledge-graph-extraction"].ready is True
     assert items["knowledge-graph-extraction"].missing_tools == []
+
+
+@pytest.mark.asyncio
+async def test_skills_endpoint_exposes_quarantined_skills(tmp_path, deps) -> None:
+    skill_dir = tmp_path / "broken"
+    skill_dir.mkdir()
+    (skill_dir / "SKILL.md").write_text(
+        """---
+name: broken
+description: Broken skill
+tools: [missing_tool]
+---
+
+# Broken
+""",
+        encoding="utf-8",
+    )
+
+    def reject_missing_tool(_skill):
+        raise RuntimeError("工具未注册: missing_tool")
+
+    deps.declarative_registry = DeclarativeSkillRegistry(tmp_path, validator=reject_missing_tool)
+    request = SimpleNamespace(app=SimpleNamespace(state=SimpleNamespace(deps=deps)))
+
+    response = await list_skills(request)
+    item = next(item for item in response.skills if item.name == "broken")
+
+    assert item.kind == "skill"
+    assert item.ready is False
+    assert item.unavailable_reason == "工具未注册: missing_tool"

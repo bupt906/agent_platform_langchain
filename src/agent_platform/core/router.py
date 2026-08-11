@@ -24,6 +24,15 @@ class RouterDecision(BaseModel):
     confidence: float = Field(ge=0.0, le=1.0)
     mode: Literal["single", "multi"] = "single"
     execution_plan: ExecutionPlan | None = None
+    requested_skill_name: str | None = Field(default=None, exclude=True)
+    fallback_reason: str | None = Field(default=None, exclude=True)
+
+
+def _fall_back_to_general(decision: RouterDecision, reason: str) -> None:
+    """保留原始路由目标及降级原因，再切换到通用对话。"""
+    decision.requested_skill_name = decision.requested_skill_name or decision.skill_name
+    decision.fallback_reason = reason
+    decision.skill_name = "general"
 
 
 def _extract_tokens_from_message(msg) -> dict[str, int]:
@@ -146,6 +155,8 @@ async def execute_decision(
     error = None
     tokens = {"prompt": 0, "completion": 0, "total": 0}
     declarative_selected = False
+    decision.requested_skill_name = None
+    decision.fallback_reason = None
 
     try:
         if decision.mode == "multi" and decision.execution_plan:
@@ -174,14 +185,29 @@ async def execute_decision(
                 elif decision.skill_name == "general":
                     reply, tokens = await _general_response(message, deps, model_id, invoke_cfg)
                 else:
-                    logger.warning("自动路由选择了未注册的 Skill '%s'，降级为通用对话", decision.skill_name)
-                    decision.skill_name = "general"
+                    requested_skill = decision.skill_name
+                    unavailable_reason = (
+                        deps.declarative_registry.unavailable_skills.get(requested_skill)
+                        if deps.declarative_registry
+                        else None
+                    )
+                    reason = (
+                        f"declarative_skill_unavailable: {unavailable_reason}"
+                        if unavailable_reason
+                        else "skill_not_found"
+                    )
+                    logger.warning(
+                        "路由目标 Skill '%s' 不可用，降级为通用对话: %s",
+                        requested_skill,
+                        reason,
+                    )
+                    _fall_back_to_general(decision, reason)
                     reply, tokens = await _general_response(message, deps, model_id, invoke_cfg)
     except RuntimeError as e:
         error = str(e)
         if declarative_selected:
             logger.warning("声明式 Skill 执行失败，降级为通用对话: %s", error, exc_info=True)
-            decision.skill_name = "general"
+            _fall_back_to_general(decision, f"declarative_skill_execution_error: {error}")
             try:
                 reply, tokens = await _general_response(message, deps, model_id, invoke_cfg)
             except Exception as fallback_error:
@@ -228,6 +254,8 @@ async def execute_decision(
                     tokens_total=tokens["total"],
                     duration_ms=(time.monotonic() - start_time) * 1000,
                     skill_used=decision.skill_name,
+                    requested_skill=decision.requested_skill_name,
+                    fallback_reason=decision.fallback_reason,
                     router_confidence=decision.confidence,
                     error=error,
                 )

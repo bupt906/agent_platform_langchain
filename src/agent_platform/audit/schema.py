@@ -23,6 +23,8 @@ class AuditRecord(BaseModel):
     tokens_total: int = 0
     duration_ms: float = 0.0
     skill_used: str | None = None
+    requested_skill: str | None = None
+    fallback_reason: str | None = None
     router_confidence: float | None = None
     error: str | None = None
 

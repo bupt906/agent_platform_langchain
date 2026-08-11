@@ -88,10 +88,15 @@ class ModelProvider:
             "api_mode": "openai-chat-completions",
         }
 
+    def describe_public_model(self, model_id: str | None = None) -> dict[str, str]:
+        """返回可安全发送给客户端的模型信息，不暴露内部服务地址。"""
+        info = self.describe_model(model_id)
+        return {key: value for key, value in info.items() if key != "base_url"}
+
     def model_identity_instruction(self, model_id: str | None = None) -> str:
         """生成供系统提示词使用的模型身份说明，避免模型自行猜测。"""
         info = self.describe_model(model_id)
-        identity = f"本次请求的运行时模型是 {info['provider_name']} 提供的 {info['model_name']}。"
+        identity = f"本次请求的权威运行时模型是 {info['provider_name']} 提供的 {info['model_name']}。"
         return (
             f"{identity} 如果用户询问模型身份，必须依据此运行时信息回答，"
             "不要根据训练语料、客户端名称或兼容协议猜测其他供应商。"

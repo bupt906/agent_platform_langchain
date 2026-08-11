@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+from types import SimpleNamespace
 
 import pytest
 from langchain_core.messages import AIMessageChunk
@@ -12,6 +13,7 @@ from agent_platform.api.routes.chat import (
     _model_end_data,
     _resolve_single_target,
     _tool_event_data,
+    chat_stream,
 )
 from agent_platform.api.schemas import ChatRequest
 from agent_platform.skills.registry import DeclarativeSkillRegistry
@@ -24,54 +26,82 @@ def test_chat_request_disables_thinking_by_default() -> None:
 
 
 @pytest.mark.asyncio
+async def test_stream_public_metadata_and_fallback_are_observable(deps) -> None:
+    deps.declarative_registry = DeclarativeSkillRegistry()
+    request = SimpleNamespace(app=SimpleNamespace(state=SimpleNamespace(deps=deps)))
+    response = await chat_stream(
+        request,
+        ChatRequest(message="测试", skill="missing-skill"),
+    )
+
+    model_event = await anext(response.body_iterator)
+    routing_event = await anext(response.body_iterator)
+    await response.body_iterator.aclose()
+    model_data = json.loads(model_event["data"])
+    routing_data = json.loads(routing_event["data"])
+
+    assert model_event["event"] == "model_info"
+    assert "base_url" not in model_data
+    assert routing_data["skill"] == "general"
+    assert routing_data["requested_skill"] == "missing-skill"
+    assert routing_data["fallback_reason"] == "skill_not_found"
+
+
+@pytest.mark.asyncio
 async def test_resolve_single_target_finds_declarative_skill(deps) -> None:
     deps.declarative_registry = DeclarativeSkillRegistry()
 
-    agent, skill, target_type = _resolve_single_target(
+    target = _resolve_single_target(
         deps,
         "knowledge-graph-extraction",
     )
 
-    assert agent is None
-    assert skill is not None
-    assert skill.name == "knowledge-graph-extraction"
-    assert target_type == "skill"
+    assert target.agent is None
+    assert target.declarative_skill is not None
+    assert target.declarative_skill.name == "knowledge-graph-extraction"
+    assert target.target_type == "skill"
+    assert target.fallback_reason is None
 
 
 @pytest.mark.asyncio
 async def test_resolve_single_target_falls_back_for_unknown_auto_route(deps) -> None:
     deps.declarative_registry = DeclarativeSkillRegistry()
 
-    agent, skill, target_type = _resolve_single_target(deps, "knowledge-graph-extractoin")
+    target = _resolve_single_target(deps, "knowledge-graph-extractoin")
 
-    assert agent is None
-    assert skill is None
-    assert target_type == "general"
+    assert target.agent is None
+    assert target.declarative_skill is None
+    assert target.target_type == "general"
+    assert target.requested_skill == "knowledge-graph-extractoin"
+    assert target.fallback_reason == "skill_not_found"
 
 
 @pytest.mark.asyncio
 async def test_resolve_single_target_falls_back_for_unknown_explicit_skill(deps) -> None:
     deps.declarative_registry = DeclarativeSkillRegistry()
 
-    agent, skill, target_type = _resolve_single_target(
+    target = _resolve_single_target(
         deps,
         "missing-skill",
         explicit_mode="skill",
     )
 
-    assert agent is None
-    assert skill is None
-    assert target_type == "general"
+    assert target.agent is None
+    assert target.declarative_skill is None
+    assert target.target_type == "general"
+    assert target.requested_skill == "missing-skill"
+    assert target.fallback_reason == "skill_not_found"
 
 
 def test_resolve_single_target_treats_explicit_general_as_general(deps) -> None:
     deps.declarative_registry = DeclarativeSkillRegistry()
 
-    agent, skill, target_type = _resolve_single_target(deps, "general", explicit_mode="skill")
+    target = _resolve_single_target(deps, "general", explicit_mode="skill")
 
-    assert agent is None
-    assert skill is None
-    assert target_type == "general"
+    assert target.agent is None
+    assert target.declarative_skill is None
+    assert target.target_type == "general"
+    assert target.fallback_reason is None
 
 
 def test_resolve_single_target_falls_back_for_unavailable_skill(tmp_path, deps) -> None:
@@ -94,11 +124,13 @@ tools: [missing_tool]
 
     deps.declarative_registry = DeclarativeSkillRegistry(tmp_path, validator=reject_missing_tool)
 
-    agent, skill, target_type = _resolve_single_target(deps, "broken", explicit_mode="skill")
+    target = _resolve_single_target(deps, "broken", explicit_mode="skill")
 
-    assert agent is None
-    assert skill is None
-    assert target_type == "general"
+    assert target.agent is None
+    assert target.declarative_skill is None
+    assert target.target_type == "general"
+    assert target.requested_skill == "broken"
+    assert target.fallback_reason == "declarative_skill_unavailable: 工具未注册: missing_tool"
 
 
 @pytest.mark.asyncio

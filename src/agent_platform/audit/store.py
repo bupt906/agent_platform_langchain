@@ -27,9 +27,16 @@ CREATE TABLE IF NOT EXISTS audit_log (
     duration_ms REAL DEFAULT 0,
     skill_used TEXT,
     router_confidence REAL,
-    error TEXT
+    error TEXT,
+    requested_skill TEXT,
+    fallback_reason TEXT
 )
 """
+
+_AUDIT_COLUMN_MIGRATIONS = {
+    "requested_skill": "TEXT",
+    "fallback_reason": "TEXT",
+}
 
 _TOOL_CALLS_TABLE_SQL = """
 CREATE TABLE IF NOT EXISTS tool_calls (
@@ -66,6 +73,11 @@ class AuditStore:
             return
         await self._db.execute(_AUDIT_TABLE_SQL)
         await self._db.execute(_TOOL_CALLS_TABLE_SQL)
+        cursor = await self._db.execute("PRAGMA table_info(audit_log)")
+        existing_columns = {row[1] for row in await cursor.fetchall()}
+        for column, column_type in _AUDIT_COLUMN_MIGRATIONS.items():
+            if column not in existing_columns:
+                await self._db.execute(f"ALTER TABLE audit_log ADD COLUMN {column} {column_type}")
         for idx_sql in _INDEX_SQL:
             await self._db.execute(idx_sql)
         await self._db.commit()
@@ -76,8 +88,9 @@ class AuditStore:
         await self._ensure_tables()
         await self._db.execute(
             "INSERT INTO audit_log (id, session_id, timestamp, agent_type, user_message, assistant_message, "
-            "model_used, tokens_prompt, tokens_completion, tokens_total, duration_ms, skill_used, router_confidence, error) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            "model_used, tokens_prompt, tokens_completion, tokens_total, duration_ms, skill_used, router_confidence, "
+            "error, requested_skill, fallback_reason) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             (
                 record.id,
                 record.session_id,
@@ -93,6 +106,8 @@ class AuditStore:
                 record.skill_used,
                 record.router_confidence,
                 record.error,
+                record.requested_skill,
+                record.fallback_reason,
             ),
         )
         await self._db.commit()
@@ -117,13 +132,17 @@ class AuditStore:
         )
         await self._db.commit()
 
-    async def query(self, session_id: str | None = None, skill: str | None = None, limit: int = 100, offset: int = 0) -> list[dict[str, Any]]:
+    async def query(
+        self, session_id: str | None = None, skill: str | None = None, limit: int = 100, offset: int = 0
+    ) -> list[dict[str, Any]]:
         """按条件查询审计记录。"""
         await self._ensure_tables()
         records, _ = await self.query_with_count(session_id=session_id, skill=skill, limit=limit, offset=offset)
         return records
 
-    async def query_with_count(self, session_id: str | None = None, skill: str | None = None, limit: int = 100, offset: int = 0) -> tuple[list[dict[str, Any]], int]:
+    async def query_with_count(
+        self, session_id: str | None = None, skill: str | None = None, limit: int = 100, offset: int = 0
+    ) -> tuple[list[dict[str, Any]], int]:
         """按条件查询审计记录，同时返回符合条件的总数。"""
         await self._ensure_tables()
         conditions = []
@@ -195,12 +214,37 @@ class AuditStore:
 
 
 def _audit_row_to_dict(row: tuple) -> dict[str, Any]:
-    keys = ["id", "session_id", "timestamp", "agent_type", "user_message", "assistant_message",
-            "model_used", "tokens_prompt", "tokens_completion", "tokens_total", "duration_ms",
-            "skill_used", "router_confidence", "error"]
-    return dict(zip(keys, row))
+    keys = [
+        "id",
+        "session_id",
+        "timestamp",
+        "agent_type",
+        "user_message",
+        "assistant_message",
+        "model_used",
+        "tokens_prompt",
+        "tokens_completion",
+        "tokens_total",
+        "duration_ms",
+        "skill_used",
+        "router_confidence",
+        "error",
+        "requested_skill",
+        "fallback_reason",
+    ]
+    return dict(zip(keys, row, strict=True))
 
 
 def _tool_call_row_to_dict(row: tuple) -> dict[str, Any]:
-    keys = ["id", "audit_id", "tool_name", "start_time", "end_time", "duration_ms", "input_args", "output_summary", "success"]
-    return dict(zip(keys, row))
+    keys = [
+        "id",
+        "audit_id",
+        "tool_name",
+        "start_time",
+        "end_time",
+        "duration_ms",
+        "input_args",
+        "output_summary",
+        "success",
+    ]
+    return dict(zip(keys, row, strict=True))

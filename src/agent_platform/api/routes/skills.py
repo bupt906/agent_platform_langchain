@@ -42,4 +42,16 @@ async def list_skills(request: Request) -> SkillListResponse:
             )
             for skill in deps.declarative_registry.list_skills()
         )
+        items.extend(
+            SkillInfoResponse(
+                name=name,
+                description="声明式 Skill 配置无效，当前已隔离",
+                examples=[],
+                dependencies=[],
+                kind="skill",
+                ready=False,
+                unavailable_reason=reason,
+            )
+            for name, reason in deps.declarative_registry.unavailable_skills.items()
+        )
     return SkillListResponse(skills=items, total=len(items))

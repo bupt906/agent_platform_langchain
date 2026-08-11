@@ -26,6 +26,16 @@ def test_describe_deepseek_model_uses_deepseek_endpoint(
     }
 
 
+def test_public_model_description_omits_internal_endpoint(
+    model_provider: ModelProvider,
+) -> None:
+    info = model_provider.describe_public_model("deepseek:deepseek-v4-pro")
+
+    assert info["model_id"] == "deepseek:deepseek-v4-pro"
+    assert info["provider"] == "deepseek"
+    assert "base_url" not in info
+
+
 def test_model_identity_uses_authoritative_provider(
     model_provider: ModelProvider,
 ) -> None:

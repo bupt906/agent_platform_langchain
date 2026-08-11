@@ -98,14 +98,13 @@ def test_stream_chat_prints_multi_agent_synthesis(monkeypatch) -> None:
     assert output.getvalue() == "综合结果\n"
 
 
-def test_stream_chat_prints_authoritative_model_connection(monkeypatch) -> None:
+def test_stream_chat_prints_public_model_info(monkeypatch) -> None:
     source = FakeEventSource(
         [
             FakeEvent(
                 {
                     "type": "model_info",
                     "model_id": "deepseek:deepseek-v4-pro",
-                    "base_url": "https://api.deepseek.com/",
                     "api_mode": "openai-chat-completions",
                 }
             ),
@@ -118,9 +117,31 @@ def test_stream_chat_prints_authoritative_model_connection(monkeypatch) -> None:
 
     cli.stream_chat("测试", show_model_info=True, output=output)
 
-    assert output.getvalue() == (
-        "[模型] deepseek:deepseek-v4-pro\n[Endpoint] https://api.deepseek.com/ (openai-chat-completions)\n回答\n"
+    assert output.getvalue() == ("[模型] deepseek:deepseek-v4-pro\n[协议] openai-chat-completions\n回答\n")
+
+
+def test_stream_chat_prints_route_fallback_reason(monkeypatch) -> None:
+    source = FakeEventSource(
+        [
+            FakeEvent(
+                {
+                    "type": "routing",
+                    "source": "auto",
+                    "target_type": "general",
+                    "skill": "general",
+                    "requested_skill": "broken",
+                    "fallback_reason": "skill_not_found",
+                }
+            ),
+            FakeEvent({"type": "done"}),
+        ]
     )
+    monkeypatch.setattr(cli, "connect_sse", lambda *args, **kwargs: source)
+    output = StringIO()
+
+    cli.stream_chat("测试", show_routing=True, output=output)
+
+    assert output.getvalue() == "[路由] 自动 → general:general · fallback=broken (skill_not_found)\n\n"
 
 
 def test_stream_chat_prints_selected_route(monkeypatch) -> None:

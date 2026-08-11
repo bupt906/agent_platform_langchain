@@ -76,15 +76,73 @@ class TestAuditStore:
         assert len(results) >= 1
         assert results[0]["user_message"] == "测试问题"
 
+    async def test_record_preserves_fallback_details(self, audit_store):
+        await audit_store.record(
+            AuditRecord(
+                agent_type="general",
+                skill_used="general",
+                requested_skill="broken",
+                fallback_reason="declarative_skill_unavailable: invalid config",
+            )
+        )
+
+        results = await audit_store.query(skill="general")
+
+        assert results[0]["requested_skill"] == "broken"
+        assert results[0]["fallback_reason"] == "declarative_skill_unavailable: invalid config"
+
+    async def test_existing_audit_table_is_migrated(self, db):
+        await db.execute(
+            """CREATE TABLE audit_log (
+                id TEXT PRIMARY KEY, session_id TEXT, timestamp TEXT NOT NULL,
+                agent_type TEXT, user_message TEXT, assistant_message TEXT,
+                model_used TEXT, tokens_prompt INTEGER, tokens_completion INTEGER,
+                tokens_total INTEGER, duration_ms REAL, skill_used TEXT,
+                router_confidence REAL, error TEXT
+            )"""
+        )
+        await db.commit()
+        store = AuditStore(db)
+
+        await store.record(
+            AuditRecord(
+                agent_type="general",
+                requested_skill="broken",
+                fallback_reason="skill_not_found",
+            )
+        )
+        results = await store.query()
+
+        assert results[0]["requested_skill"] == "broken"
+        assert results[0]["fallback_reason"] == "skill_not_found"
+
     async def test_query_by_skill(self, audit_store):
-        await audit_store.record(AuditRecord(session_id="s1", agent_type="skill:qa", user_message="q1", assistant_message="a1", skill_used="document_review"))
-        await audit_store.record(AuditRecord(session_id="s2", agent_type="skill:data_query", user_message="q2", assistant_message="a2", skill_used="document_review"))
+        await audit_store.record(
+            AuditRecord(
+                session_id="s1",
+                agent_type="skill:qa",
+                user_message="q1",
+                assistant_message="a1",
+                skill_used="document_review",
+            )
+        )
+        await audit_store.record(
+            AuditRecord(
+                session_id="s2",
+                agent_type="skill:data_query",
+                user_message="q2",
+                assistant_message="a2",
+                skill_used="document_review",
+            )
+        )
 
         qa_results = await audit_store.query(skill="document_review")
         assert all(r["skill_used"] == "document_review" for r in qa_results)
 
     async def test_record_tool_call(self, audit_store):
-        await audit_store.record(AuditRecord(id="rec-1", agent_type="skill:qa", user_message="q", assistant_message="a"))
+        await audit_store.record(
+            AuditRecord(id="rec-1", agent_type="skill:qa", user_message="q", assistant_message="a")
+        )
         call = ToolCallRecord(audit_id="rec-1", tool_name="search", duration_ms=10.0)
         await audit_store.record_tool_call(call)
 
@@ -93,8 +151,26 @@ class TestAuditStore:
         assert calls[0]["tool_name"] == "search"
 
     async def test_aggregate_stats(self, audit_store):
-        await audit_store.record(AuditRecord(agent_type="skill:qa", user_message="q1", assistant_message="a1", skill_used="document_review", duration_ms=100, tokens_total=50))
-        await audit_store.record(AuditRecord(agent_type="skill:data_query", user_message="q2", assistant_message="a2", skill_used="document_review", duration_ms=200, tokens_total=100))
+        await audit_store.record(
+            AuditRecord(
+                agent_type="skill:qa",
+                user_message="q1",
+                assistant_message="a1",
+                skill_used="document_review",
+                duration_ms=100,
+                tokens_total=50,
+            )
+        )
+        await audit_store.record(
+            AuditRecord(
+                agent_type="skill:data_query",
+                user_message="q2",
+                assistant_message="a2",
+                skill_used="document_review",
+                duration_ms=200,
+                tokens_total=100,
+            )
+        )
 
         stats = await audit_store.aggregate_stats(days=30)
         assert isinstance(stats, AuditStats)

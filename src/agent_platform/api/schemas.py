@@ -36,6 +36,8 @@ class ChatResponse(BaseModel):
     session_id: str | None = None
     approval_required: bool = False
     approval_id: str | None = None
+    requested_skill: str | None = None
+    fallback_reason: str | None = None
 
 
 class SkillInfoResponse(BaseModel):
@@ -47,6 +49,7 @@ class SkillInfoResponse(BaseModel):
     tools: list[str] = []
     ready: bool = True
     missing_tools: list[str] = []
+    unavailable_reason: str | None = None
 
 
 class SkillListResponse(BaseModel):

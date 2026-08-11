@@ -126,12 +126,23 @@ async def test_unavailable_skill_falls_back_to_general(tmp_path, deps, monkeypat
 
     assert reply == "general:测试问题"
     assert decision.skill_name == "general"
+    assert decision.requested_skill_name == "broken"
+    assert decision.fallback_reason == "declarative_skill_unavailable: 工具未注册: missing_tool"
 
 
 @pytest.mark.asyncio
 async def test_unknown_skill_falls_back_to_general(deps, monkeypatch):
     deps.declarative_registry = DeclarativeSkillRegistry()
     decision = RouterDecision(skill_name="missing-skill", rewritten_query="测试问题", confidence=0.9)
+
+    class CapturingAuditStore:
+        record_value = None
+
+        async def record(self, record):
+            self.record_value = record
+
+    audit_store = CapturingAuditStore()
+    deps.audit_store = audit_store
 
     async def fake_general(message, _deps, _model_id, _invoke_cfg):
         return f"general:{message}", {"prompt": 1, "completion": 1, "total": 2}
@@ -142,6 +153,10 @@ async def test_unknown_skill_falls_back_to_general(deps, monkeypatch):
 
     assert reply == "general:测试问题"
     assert decision.skill_name == "general"
+    assert decision.requested_skill_name == "missing-skill"
+    assert decision.fallback_reason == "skill_not_found"
+    assert audit_store.record_value.requested_skill == "missing-skill"
+    assert audit_store.record_value.fallback_reason == "skill_not_found"
 
 
 @pytest.mark.asyncio
@@ -166,3 +181,5 @@ async def test_runtime_skill_configuration_error_falls_back_to_general(deps, mon
 
     assert reply == "general:测试问题"
     assert decision.skill_name == "general"
+    assert decision.requested_skill_name == "knowledge-graph-extraction"
+    assert decision.fallback_reason == "declarative_skill_execution_error: 工具未注册: missing_tool"
