@@ -13,6 +13,7 @@ export interface SSEMessage {
   error?: string;
   finish_reason?: string;
   tool_calls?: number;
+  path?: string;
 }
 
 export function useSSE() {

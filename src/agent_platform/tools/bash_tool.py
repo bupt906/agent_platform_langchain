@@ -209,21 +209,31 @@ def _safe_environment() -> dict[str, str]:
     """传递运行所需的基础环境，但不把密钥类变量暴露给子进程。"""
     keep = {
         "HOME",
+        "USERPROFILE",  # Windows home 目录，缺少它 ~ 无法展开，ezdxf 等库会崩溃
         "LANG",
         "LC_ALL",
         "PATH",
         "PYTHONPATH",
+        "PYTHONUTF8",
         "VIRTUAL_ENV",
         "SYSTEMROOT",
         "TMP",
         "TEMP",
         "TMPDIR",
     }
-    return {
+    env = {
         key: value
         for key, value in os.environ.items()
         if key in keep and not _SECRET_ENV_RE.search(key)
     }
+    # Windows 上 HOME 常缺失，~ 展开依赖它；用 USERPROFILE 兜底，
+    # 否则 build123d/ezdxf 会因无法确定 home 目录而崩溃。
+    if not env.get("HOME") and env.get("USERPROFILE"):
+        env["HOME"] = env["USERPROFILE"]
+    # 强制 UTF-8：中文 Windows 上 agentcad 写 viewer.html 会用 GBK 崩溃，
+    # PYTHONUTF8=1 让子进程（build123d/ezdxf）的文件读写都走 UTF-8。
+    env["PYTHONUTF8"] = "1"
+    return env
 
 
 def _truncate_output(value: str, max_chars: int) -> tuple[str, bool]:

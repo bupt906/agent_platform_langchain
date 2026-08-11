@@ -13,6 +13,10 @@ export interface SkillInfo {
   description: string;
   examples: string[];
   dependencies: string[];
+  kind?: string;
+  tools?: string[];
+  ready?: boolean;
+  missing_tools?: string[];
 }
 
 export interface AuditStats {

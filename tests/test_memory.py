@@ -70,6 +70,49 @@ class TestSessionStore:
         assert len(hist_b) == 1
         assert hist_a[0]["session_id"] == "session-a"
 
+    async def test_history_returns_latest_limit_not_oldest(self, db):
+        """超过 limit 条历史时，应返回最近 limit 条，而非最旧的 limit 条。"""
+        store = SessionStore(db)
+        sid = "many-turns"
+        for i in range(1, 16):  # 15 轮
+            await store.add_turn(sid, f"问题{i}", f"答案{i}", skill_used="cad-agentcad")
+
+        history = await store.get_session_history(sid, limit=10)
+        assert len(history) == 10
+        # 最近 10 轮 = 问题6..问题15，且按正序返回
+        assert history[0]["user_message"] == "问题6"
+        assert history[-1]["user_message"] == "问题15"
+        ids = [h["id"] for h in history]
+        assert ids == sorted(ids)  # 按 id 正序
+
+    async def test_history_filter_by_skill(self, db):
+        """指定 skill 时只返回该 skill 产生的历史。"""
+        store = SessionStore(db)
+        sid = "multi-skill"
+        await store.add_turn(sid, "q1", "a1", skill_used="cad-agentcad")
+        await store.add_turn(sid, "q2", "a2", skill_used="knowledge-graph-extraction")
+        await store.add_turn(sid, "q3", "a3", skill_used="cad-agentcad")
+
+        cad_hist = await store.get_session_history(sid, skill="cad-agentcad")
+        assert len(cad_hist) == 2
+        assert all(h["skill_used"] == "cad-agentcad" for h in cad_hist)
+        assert [h["user_message"] for h in cad_hist] == ["q1", "q3"]
+
+        all_hist = await store.get_session_history(sid)
+        assert len(all_hist) == 3
+
+    async def test_history_limit_equals_turns_not_doubled(self, db):
+        """limit 表示轮数（每行一轮），limit=5 应返回 5 轮而非 10 轮。"""
+        store = SessionStore(db)
+        sid = "turn-count"
+        for i in range(1, 8):
+            await store.add_turn(sid, f"q{i}", f"a{i}", skill_used="cad-agentcad")
+
+        history = await store.get_session_history(sid, limit=5)
+        assert len(history) == 5
+        assert history[0]["user_message"] == "q3"
+        assert history[-1]["user_message"] == "q7"
+
 
 class TestUserProfileStore:
     """用户画像存储测试。"""
