@@ -2,8 +2,10 @@ from __future__ import annotations
 
 import json
 import logging
+import secrets
 from collections.abc import AsyncIterator, Iterator, Mapping
 from dataclasses import dataclass, replace
+from pathlib import Path
 from typing import Any
 
 from fastapi import APIRouter, HTTPException, Request
@@ -12,7 +14,6 @@ from langchain_core.messages import HumanMessage, SystemMessage
 from sse_starlette.sse import EventSourceResponse
 
 from agent_platform.api.schemas import ChatRequest, ChatResponse
-from agent_platform.config.settings import settings
 from agent_platform.core.deps import PlatformDeps
 from agent_platform.core.router import (
     RouterDecision,
@@ -28,29 +29,44 @@ logger = logging.getLogger(__name__)
 router = APIRouter()
 
 
-@router.get("/viewer", response_class=HTMLResponse)
-async def viewer_html(path: str):
-    """返回 agentcad 生成的 3D viewer.html 内容，供前端 iframe 展示。
+# ── viewer 安全注册表 ─────────────────────────────────────────
+# 服务端生成不可猜测的 ID 映射到真实的 viewer.html 路径，前端只拿 ID，
+# 不暴露本地文件路径。同时只允许 CAD 专用输出目录下的文件。
+_viewer_registry: dict[str, str] = {}
 
-    Args:
-        path: viewer.html 的路径（相对允许根目录，如 `cad_output/v1/viewer.html`）。
+
+def _register_viewer(path: str) -> str:
+    """把 viewer.html 路径注册为不可猜测 ID，返回该 ID。
+
+    仅接受 CAD 输出目录（cad_output/）下的 .html 文件，其他路径拒绝。
+    调用方（skill 执行流程）在生成 viewer 后注册，前端凭 ID 访问。
     """
-    from pathlib import Path
-
-    # 解析为允许根目录内的绝对路径，防止路径穿越
-    requested = Path(path).expanduser()
-    if not requested.is_absolute():
-        requested = Path.cwd() / requested
-    resolved = requested.resolve()
-
-    allowed_roots = [Path(r).expanduser().resolve() for r in settings.file_read_allowed_roots.split(",") if r.strip()]
-    if not allowed_roots or not any(resolved.is_relative_to(root) for root in allowed_roots):
-        raise HTTPException(status_code=403, detail="路径不在允许目录内")
+    resolved = Path(path).resolve()
+    # 只允许 cad_output 目录下的文件
+    cad_root = (Path.cwd() / "cad_output").resolve()
+    if not resolved.is_relative_to(cad_root):
+        raise HTTPException(status_code=403, detail="viewer 必须在 CAD 输出目录内")
     if resolved.suffix.lower() != ".html":
         raise HTTPException(status_code=400, detail="仅支持 .html 文件")
     if not resolved.exists():
         raise HTTPException(status_code=404, detail="viewer 文件不存在")
-    return HTMLResponse(resolved.read_text(encoding="utf-8"))
+
+    file_id = secrets.token_urlsafe(16)
+    _viewer_registry[file_id] = str(resolved)
+    return file_id
+
+
+@router.get("/viewer/{file_id}", response_class=HTMLResponse)
+async def viewer_html(file_id: str):
+    """通过不可猜测 ID 返回 CAD viewer.html 内容，供前端 iframe 展示。
+
+    不接收任意本地路径，只接受由 _register_viewer 生成的 ID，避免
+    恶意 Skill 写入任意 HTML 后被同源 iframe 加载（存储型 XSS）。
+    """
+    path = _viewer_registry.get(file_id)
+    if not path:
+        raise HTTPException(status_code=404, detail="viewer 不存在或已过期")
+    return HTMLResponse(Path(path).read_text(encoding="utf-8"))
 
 
 @dataclass(frozen=True)
@@ -351,7 +367,7 @@ async def chat_stream(request: Request, body: ChatRequest) -> EventSourceRespons
 
             # 加载会话历史，让 skill 感知多轮上下文
             history_messages = await _load_session_messages(
-                deps, effective_body.session_id or ""
+                deps, effective_body.session_id or "", skill=declarative.name
             )
             input_messages = [*history_messages, HumanMessage(content=effective_body.message)]
 
@@ -370,12 +386,15 @@ async def chat_stream(request: Request, body: ChatRequest) -> EventSourceRespons
                                 content=content,
                             )
                     else:
-                        # 检测 agentcad run 生成的 viewer，发给前端展示
-                        # 必须在 tool_event 判断之前，确保 complete_task 的
-                        # on_tool_start（含 VIEWER_PATH）也能被检测到。
+                        # 检测 agentcad run 生成的 viewer，注册为不可猜测 ID 后
+                        # 发给前端（不暴露真实文件路径，防存储型 XSS）
                         viewer_path = _extract_viewer_path(event)
                         if viewer_path:
-                            yield _sse("cad_viewer", type="cad_viewer", path=viewer_path)
+                            try:
+                                viewer_id = _register_viewer(viewer_path)
+                                yield _sse("cad_viewer", type="cad_viewer", path=viewer_id)
+                            except HTTPException:
+                                logger.warning("viewer 路径未通过安全校验，忽略: %s", viewer_path)
 
                         tool_event = _tool_event_data(event)
                         if tool_event:
@@ -396,14 +415,19 @@ async def chat_stream(request: Request, body: ChatRequest) -> EventSourceRespons
                 )
                 return
 
-            # 持久化本轮对话，多轮记忆才能生效
-            if deps.session_store and effective_body.session_id:
+            # 持久化本轮对话，多轮记忆才能生效。空回复/异常执行不持久化，
+            # 避免污染历史影响后续轮次。
+            if (
+                deps.session_store
+                and effective_body.session_id
+                and final_reply
+            ):
                 try:
                     await deps.session_store.add_turn(
                         session_id=effective_body.session_id,
                         user_message=effective_body.message,
-                        assistant_message=final_reply or "",
-                        skill_used=skill_name,
+                        assistant_message=final_reply,
+                        skill_used=declarative.name,
                         tokens_used=0,
                     )
                 except Exception:

@@ -95,15 +95,32 @@ class SessionStore:
         await self._db.commit()
         return cursor.lastrowid
 
-    async def get_session_history(self, session_id: str, limit: int = 50) -> list[dict[str, Any]]:
-        """获取指定会话的历史对话，按时间正序。"""
+    async def get_session_history(
+        self, session_id: str, limit: int = 50, skill: str | None = None
+    ) -> list[dict[str, Any]]:
+        """获取指定会话最近 limit 条对话记录，按时间正序返回。
+
+        Args:
+            session_id: 会话标识。
+            limit: 返回的记录条数（每行 = 一轮）。
+            skill: 可选，只返回该 skill 产生的记录；为 None 返回全部。
+        """
         await self.ensure_tables()
-        cursor = await self._db.execute(
+        # 先倒序取最近 limit 条，再按 id 正序返回，保证时序正确
+        sql = (
             "SELECT id, session_id, user_message, assistant_message, skill_used, model_used, tokens_used, duration_ms, created_at "
-            "FROM conversations WHERE session_id = ? ORDER BY id ASC LIMIT ?",
-            (session_id, limit),
+            "FROM conversations WHERE session_id = ? "
         )
+        params: list = [session_id]
+        if skill:
+            sql += "AND skill_used = ? "
+            params.append(skill)
+        sql += "ORDER BY id DESC LIMIT ?"
+        params.append(limit)
+
+        cursor = await self._db.execute(sql, tuple(params))
         rows = await cursor.fetchall()
+        rows = sorted(rows, key=lambda r: r[0])
         keys = ["id", "session_id", "user_message", "assistant_message", "skill_used", "model_used", "tokens_used", "duration_ms", "created_at"]
         return [dict(zip(keys, row)) for row in rows]
 

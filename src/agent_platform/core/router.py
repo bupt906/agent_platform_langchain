@@ -222,8 +222,8 @@ async def execute_decision(
         logger.error("决策执行失败: %s", error, exc_info=True)
         reply = f"抱歉，处理请求时出现错误: {error}"
 
-    # ── 持久化对话记录 ──
-    if deps.session_store and session_id:
+    # ── 持久化对话记录（空回复不持久化，避免污染历史）──
+    if deps.session_store and session_id and reply:
         try:
             await deps.session_store.add_turn(
                 session_id=session_id,
@@ -319,8 +319,8 @@ async def execute_skill_direct(
 
     duration_ms = (time.monotonic() - start_time) * 1000
 
-    # ── 持久化对话记录 ──
-    if deps.session_store and session_id:
+    # ── 持久化对话记录（空回复不持久化，避免污染历史）──
+    if deps.session_store and session_id and reply:
         try:
             await deps.session_store.add_turn(
                 session_id=session_id,
@@ -369,22 +369,23 @@ def _build_invoke_config(session_id: str | None) -> dict:
 
 
 async def _load_session_messages(
-    deps: PlatformDeps, session_id: str, max_turns: int = 10
+    deps: PlatformDeps, session_id: str, max_turns: int = 10, skill: str | None = None
 ) -> list:
     """加载最近 max_turns 轮会话历史，转换为 LangChain 消息列表（正序，不含本轮）。
 
     让声明式 Skill 也能感知多轮上下文，否则每次执行都只有当前一条
-    消息，模型完全不知道之前的设计过程。
+    消息，模型完全不知道之前的设计过程。可指定 skill 只加载该 skill
+    产生的历史，避免不同 skill 的历史互相干扰。
     """
     from langchain_core.messages import AIMessage, HumanMessage
 
     if not session_id or not deps.session_store:
         return []
     try:
-        # get_session_history 按条返回，一轮含 user + assistant 两条，
-        # 这里 limit 传入轮数 * 2 以取到完整的最近 max_turns 轮。
+        # 每行记录 = 一轮（user + assistant 在同一行），get_session_history
+        # 现在返回最近 limit 条（按时间正序），这里 limit 直接传轮数。
         history = await deps.session_store.get_session_history(
-            session_id, limit=max_turns * 2
+            session_id, limit=max_turns, skill=skill
         )
     except Exception:
         return []
@@ -431,7 +432,7 @@ async def _execute_declarative_skill(
     )
 
     # 加载会话历史，让 skill 感知多轮上下文
-    history_messages = await _load_session_messages(deps, session_id)
+    history_messages = await _load_session_messages(deps, session_id, skill=skill.name)
     input_messages = [*history_messages, HumanMessage(content=message)]
 
     skill_invoke_cfg = {

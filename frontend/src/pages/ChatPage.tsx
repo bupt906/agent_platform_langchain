@@ -158,6 +158,7 @@ function CadViewer({ path }: { path: string }) {
             src={src}
             title="CAD 3D Viewer"
             className="origin-top-left border-0"
+            sandbox="allow-scripts"
             style={{ width: VIEWER_BASE_W, height: VIEWER_BASE_H, transform: `scale(${scale})` }}
           />
         </div>
