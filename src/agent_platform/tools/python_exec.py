@@ -9,11 +9,11 @@ import builtins
 import io
 import json
 import logging
+import multiprocessing
 import tempfile
-from concurrent.futures import ThreadPoolExecutor
-from concurrent.futures import TimeoutError as FuturesTimeoutError
 from contextlib import redirect_stdout
 from pathlib import Path
+from typing import Any
 
 from langchain_core.tools import tool
 
@@ -128,6 +128,55 @@ def _get_safe_globals(output_dir: str) -> dict:
 
 # ── 工具 ────────────────────────────────────────────────────
 
+
+def _execute_in_child(code: str, output_dir: str, session_vars: dict[str, Any], connection) -> None:
+    """在可强制终止的子进程执行代码，并通过单向管道返回小型结果。"""
+    output_buf = io.StringIO()
+    ns = _get_safe_globals(output_dir)
+    if session_vars:
+        ns.update(session_vars)
+        ns["pd"] = _ORIGINAL_IMPORT("pandas")
+        ns["np"] = _ORIGINAL_IMPORT("numpy")
+    safe_keys = set(ns)
+    try:
+        with redirect_stdout(output_buf):
+            exec(compile(code, "<sandbox>", "exec"), ns)
+        result_vars = {}
+        for key, value in ns.items():
+            if key in safe_keys or key.startswith("_") or callable(value):
+                continue
+            rendered = repr(value)
+            result_vars[key] = rendered[:10_000]
+            if len(result_vars) >= 100:
+                break
+        output_files = [
+            {"name": path.name, "path": str(path), "size": path.stat().st_size}
+            for path in Path(output_dir).glob("**/*")
+            if path.is_file()
+        ]
+        connection.send(
+            {
+                "stdout": output_buf.getvalue()[:50_000],
+                "variables": result_vars,
+                "output_dir": output_dir,
+                "output_files": output_files,
+                "success": True,
+            }
+        )
+    except Exception as exc:
+        import traceback
+
+        connection.send(
+            {
+                "error": f"{type(exc).__name__}: {exc}",
+                "traceback": traceback.format_exc()[-1000:],
+                "stdout": output_buf.getvalue()[:10_000],
+                "success": False,
+            }
+        )
+    finally:
+        connection.close()
+
 @tool
 def execute_python(code: str, session_id: str = "") -> str:
     """执行 Python 代码并返回输出。
@@ -137,71 +186,47 @@ def execute_python(code: str, session_id: str = "") -> str:
     生成的文件请保存到 OUTPUT_DIR 目录下（如 f"{OUTPUT_DIR}/output.pptx"），执行结束后会返回文件路径。
     """
     output_dir = tempfile.mkdtemp(prefix="sandbox_")
-    output_buf = io.StringIO()
-    ns = _get_safe_globals(output_dir)
-
-    # 注入 session 隔离变量
+    session_vars: dict[str, Any] = {}
     if session_id:
         try:
             from agent_platform.tools.data_tools import get_session_vars
-            svars = get_session_vars(session_id)
-            if svars:
-                ns.update(svars)
-                ns["pd"] = _ORIGINAL_IMPORT("pandas")
-                ns["np"] = _ORIGINAL_IMPORT("numpy")
+
+            session_vars = get_session_vars(session_id) or {}
         except Exception:
             pass
-
-    safe_keys = set(ns.keys())
-
-    def _run():
-        with redirect_stdout(output_buf):
-            compiled = compile(code, "<sandbox>", "exec")
-            exec(compiled, ns)
-
-    pool = ThreadPoolExecutor(max_workers=1)
-    future = pool.submit(_run)
+    methods = multiprocessing.get_all_start_methods()
+    process_context = multiprocessing.get_context("fork" if "fork" in methods else "spawn")
+    parent_connection, child_connection = process_context.Pipe(duplex=False)
+    process = process_context.Process(
+        target=_execute_in_child,
+        args=(code, output_dir, session_vars, child_connection),
+        daemon=True,
+    )
+    process.start()
+    child_connection.close()
+    if not parent_connection.poll(PYTHON_EXEC_TIMEOUT):
+        process.terminate()
+        process.join(timeout=2)
+        if process.is_alive() and hasattr(process, "kill"):
+            process.kill()
+            process.join(timeout=2)
+        parent_connection.close()
+        return json.dumps(
+            {
+                "error": f"TimeoutError: 代码执行超过 {PYTHON_EXEC_TIMEOUT} 秒，已终止",
+                "stdout": "",
+                "success": False,
+            },
+            ensure_ascii=False,
+        )
     try:
-        future.result(timeout=PYTHON_EXEC_TIMEOUT)
-    except FuturesTimeoutError:
-        pool.shutdown(wait=False)
-        return json.dumps({
-            "error": f"TimeoutError: 代码执行超过 {PYTHON_EXEC_TIMEOUT} 秒，已终止",
-            "stdout": output_buf.getvalue()[:10000],
-            "success": False,
-        }, ensure_ascii=False)
-    except Exception as e:
-        pool.shutdown(wait=False)
-        import traceback
-        tb = traceback.format_exc()
-        return json.dumps({
-            "error": f"{type(e).__name__}: {e}",
-            "traceback": tb[-1000:],
-            "stdout": output_buf.getvalue()[:10000],
-            "success": False,
-        }, ensure_ascii=False)
-
-    pool.shutdown(wait=False)
-
-    stdout = output_buf.getvalue()
-    result_vars = {
-        k: repr(v) for k, v in ns.items()
-        if k not in safe_keys and not k.startswith("_") and not callable(v)
-    }
-
-    # 扫描生成的输出文件
-    output_files = []
-    for f in Path(output_dir).glob("**/*"):
-        if f.is_file():
-            output_files.append({"name": f.name, "path": str(f), "size": f.stat().st_size})
-
-    return json.dumps({
-        "stdout": stdout[:50000],
-        "variables": result_vars,
-        "output_dir": output_dir,
-        "output_files": output_files,
-        "success": True,
-    }, ensure_ascii=False, default=str)
+        payload = parent_connection.recv()
+    except EOFError:
+        payload = {"error": "RuntimeError: Python 子进程异常退出", "success": False}
+    finally:
+        parent_connection.close()
+        process.join(timeout=2)
+    return json.dumps(payload, ensure_ascii=False, default=str)
 
 
 def register_python_tool():

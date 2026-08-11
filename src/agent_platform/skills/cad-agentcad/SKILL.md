@@ -10,7 +10,8 @@ description: >-
   "design a bracket", "create a 3D model", "make a mechanical part", "generate
   a STEP file", "CAD this shape". This skill is for 3D CAD generation ONLY —
   not for 2D drafting, mesh editing, or simulation.
-tools: [read_file, write_file, bash]
+tools: [workspace_read, workspace_write, workspace_list, sandbox_run, publish_artifact]
+runtime: cad-agentcad
 complete_tool: complete_task
 ---
 
@@ -19,30 +20,18 @@ complete_tool: complete_task
 **语言要求：无论用户输入什么语言，你给用户的最终回复、进度描述、设计说明、
 尺寸报告，一律使用中文。** 只有 CAD 代码、文件路径、变量名保持英文。
 
-You have access to **agentcad**, a CLI that turns build123d Python scripts into
-3D geometry. agentcad is installed by `setup_agentcad.ps1` / `setup_agentcad.sh`
-(see docs/agentcad-部署说明.md), but its **exact path varies by machine**. So the
-FIRST thing you do is detect it — once. Do not assume a fixed path.
-
-**Step 0 — detect agentcad (do this once, at the very start):**
-
-```bash
-python src/agent_platform/skills/cad-agentcad/scripts/find_agentcad.py
-```
-
-It prints JSON like `{"agentcad": "<path>", "agentcad_python": "<path>", ...}`.
-From then on, every `agentcad` command below uses the detected path (the
-`agentcad` field; or the `agentcad_python` path + `-m agentcad` if the CLI is
-absent). If `agentcad` is empty, tell the user to run the setup script — do not
-proceed.
+You have access to **agentcad** through a server-approved, isolated Runtime
+Profile. Every command runs inside a resource-limited container with no network
+and only this conversation's Skill Workspace mounted. Never try to discover a
+host executable, use an absolute host path, or invoke the general `bash` tool.
 
 Each tool call is expensive — keep the total under ~10 calls.
 
 **Golden rule — this is the whole workflow:**
 
-1. **Write a `.py` script** with `write_file`. Scripts need zero imports — build123d
+1. **Write a `.py` script** with `workspace_write`. Scripts need zero imports — build123d
    primitives (`Box`, `Cylinder`, `Sphere`, `Plane`) and helpers are pre-injected.
-   **The file MUST end in `.py`** (`write_file` supports `.py`). Always call
+   **The file MUST end in `.py`**. Always call
    `show_object(result)` at least once.
 
    ```python
@@ -50,17 +39,13 @@ Each tool call is expensive — keep the total under ~10 calls.
    show_object(box)
    ```
 
-2. **Init the project** (once per working directory). Do NOT use `cd` or `&&` —
-   both are forbidden by the `bash` tool. Run `mkdir` and `agentcad init` as two
-   **separate** `bash` calls, each with `working_directory` set to the project
-   folder:
+2. **Init the project** once in the current Workspace with `sandbox_run`:
 
    ```bash
-   mkdir -p cad_output                          # working_directory=<parent>
-   agentcad init --name <project_name>          # working_directory=cad_output
+   agentcad init --name <project_name>
    ```
 
-3. **Run the script** with `bash` (same `working_directory=cad_output`):
+3. **Run the script** with `sandbox_run`:
 
    ```bash
    agentcad run model.py --output v1
@@ -73,37 +58,29 @@ Each tool call is expensive — keep the total under ~10 calls.
 4. **Generate a measured viewer** so the frontend 3D viewer shows the
    Dimensions / Features / Validity / Cylindrical features panels. Without
    this, the Spec check button is greyed out and those panels are missing.
-   **Do NOT use `agentcad view`** — it opens a browser window. Use the
-   platform helper script instead (writes the viewer file, no browser).
-
-   **IMPORTANT**: `make_viewer.py` imports the `agentcad` module, which only
-   exists in the agentcad Python environment, NOT the platform's default
-   `python`. Run it with the **`agentcad_python` path from Step 0** — it is
-   already in **forward-slash** form (e.g. `D:/software/.../python.exe`), which
-   the bash tool requires (backslashes get swallowed as escape chars). Do NOT
-   substitute the bare `python` command, and do NOT retry with backslashes —
-   both fail. Just replace `<agentcad_python>` with the detected value:
+   **Do NOT use `agentcad view`**. Use the immutable helper bundled in the
+   Runtime image; this is the only Python entrypoint approved by the Profile:
 
    ```bash
-   <agentcad_python> src/agent_platform/skills/cad-agentcad/scripts/make_viewer.py <outputs.step path> --measure --out <viewer path>
+   python /opt/agent-platform/make_viewer.py <outputs.step path> --measure --out <viewer path>
    ```
 
-   Example (run from the project root, `working_directory` unset):
+   Example:
    ```bash
-   <agentcad_python> src/agent_platform/skills/cad-agentcad/scripts/make_viewer.py cad_output/v1/output.step --measure --out cad_output/v1/viewer_measured.html
+   python /opt/agent-platform/make_viewer.py v1/output.step --measure --out v1/viewer_measured.html
    ```
-   The script prints a JSON line `{"viewer": "<path>"}` on success. Report
-   that path so the frontend can display it.
+   The script prints a JSON line `{"viewer": "<path>"}` on success.
 
-   This produces a viewer.html with measurement data embedded. Report its
-   path (from the JSON `viewer` field) so the frontend can display it.
+5. **Publish outputs** with `publish_artifact`. Always publish the measured
+   HTML viewer and the STEP file. The returned `artifact_id` is the only public
+   reference; never expose Workspace or host paths.
 
-5. **Report** the STEP path and metrics to the user via `complete_task`.
+6. **Report** dimensions, volume, validity, and artifact IDs via `complete_task`.
 
 **Forbidden (will error — do not try):**
-- `cd`, `&&`, `||`, `;`, pipes, `>` — the `bash` tool rejects chained commands.
-- `python -c "..."` or `python < .txt` — the `bash` tool rejects Python `-c`.
-- `rm`, `del`, `which`, `where`, `pwd` — not whitelisted.
+- Shell syntax (`cd`, `&&`, `||`, `;`, pipes, redirection) is not a command.
+- `python -c`, arbitrary Python files, package installation, and network access.
+- Reading or writing outside the current Workspace.
 - Writing the CAD script with a non-`.py` extension — `agentcad` only runs `.py`.
 
 That is the minimum viable path. Use the command reference below only when the
@@ -225,27 +202,8 @@ via `+` → subtract holes via `-` → fillet/chamfer edges → `show_object`.
 5. **Complex profiles (gears)?** Use subtractive construction — cut from a blank
    cylinder/box instead of building up.
 
-## Known issue: Chinese Windows encoding
-
-On Chinese Windows, `agentcad run` may end `status: error` with a
-`UnicodeEncodeError: 'gbk'` traceback while writing `viewer.html`. **The STEP,
-GLB, and preview are still generated** — only the HTML viewer fails. If this
-happens, check whether `outputs.step` exists and `agentcad measure` works on it;
-if yes, the model is good, report it, and mention the viewer.html issue. See
-`docs/agentcad-部署说明.md` for the permanent fix.
-
 ## Reporting for frontend display
 
-When you call `complete_task`, **always** include the generated `viewer.html`
-path in `detail` so the frontend can display the 3D model. Format it as a clear
-line:
-
-```
-VIEWER_PATH: <path-to-viewer.html>
-```
-
-Use the **actual path** from the `agentcad run` JSON `viewer` field (e.g.
-`cad_output/v1/viewer.html`). If the run failed on Chinese Windows but the
-viewer.html exists, still report its path. The frontend renders this viewer
-inside the chat automatically; the user should not have to open files manually.
-
+The frontend renders a published HTML artifact automatically when
+`publish_artifact` succeeds. Include the returned viewer and STEP artifact IDs
+in `complete_task.detail`, together with the measured dimensions and validity.

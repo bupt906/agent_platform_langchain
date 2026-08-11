@@ -5,7 +5,7 @@ import ChatPage from "./pages/ChatPage";
 import DashboardPage from "./pages/DashboardPage";
 import ReviewTasksPage from "./pages/ReviewTasksPage";
 import GraphViewerPage from "./pages/GraphViewerPage";
-import { PreferencesProvider } from "./hooks/usePreferences";
+import { PreferencesProvider } from "./hooks/PreferencesProvider";
 
 const mobileLinks = [
   { to: "/", icon: MessageSquareMore, label: "对话" },

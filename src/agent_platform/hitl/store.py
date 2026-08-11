@@ -70,7 +70,7 @@ class ApprovalStore:
         if not row:
             return None
         keys = ["id", "session_id", "thread_id", "node_id", "skill_name", "operation", "details", "created_at", "status", "decided_by", "decided_at"]
-        return dict(zip(keys, row))
+        return dict(zip(keys, row, strict=True))
 
     async def set_status(self, approval_id: str, status: ApprovalStatus, decided_by: str = "") -> None:
         """更新审批状态。"""
@@ -97,7 +97,7 @@ class ApprovalStore:
                 (limit, offset),
             )
         rows = await cursor.fetchall()
-        return [dict(zip(keys, row)) for row in rows]
+        return [dict(zip(keys, row, strict=True)) for row in rows]
 
     async def cleanup_expired(self, timeout_seconds: int = 300) -> int:
         """将超时的审批请求标记为 timeout，返回更新行数。"""

@@ -142,12 +142,14 @@ def _validate_executable(args: list[str], configured_commands: str) -> str:
         raise PermissionError(f"禁止执行命令: {executable_name}")
 
     allowed = _configured_values(configured_commands)
-    if executable_name not in allowed:
+    is_python_executable = re.fullmatch(r"python(?:\d+(?:\.\d+)*)?", executable_name) is not None
+    python_family_allowed = is_python_executable and bool({"python", "python3"}.intersection(allowed))
+    if executable_name not in allowed and not python_family_allowed:
         allowed_text = ", ".join(sorted(allowed)) or "（空）"
         raise PermissionError(f"命令 '{executable_name}' 不在白名单中。允许命令: {allowed_text}")
 
     # Python 的 -c/标准输入模式等价于任意代码执行。这里只允许文件脚本。
-    if executable_name.startswith("python"):
+    if is_python_executable:
         if "-c" in args[1:] or "-" in args[1:]:
             raise PermissionError("bash 工具不允许使用 Python -c 或标准输入执行代码")
         if "-m" in args[1:]:
@@ -165,7 +167,7 @@ def _validate_executable(args: list[str], configured_commands: str) -> str:
         raise PermissionError("bash 工具禁止 ls 解引用符号链接")
 
     executable = shutil.which(requested)
-    if executable is None and executable_name in {"python", "python3"}:
+    if executable is None and is_python_executable:
         executable = sys.executable
     if executable is None:
         candidate = Path(requested).expanduser()
@@ -230,8 +232,7 @@ def _safe_environment() -> dict[str, str]:
     # 否则 build123d/ezdxf 会因无法确定 home 目录而崩溃。
     if not env.get("HOME") and env.get("USERPROFILE"):
         env["HOME"] = env["USERPROFILE"]
-    # 强制 UTF-8：中文 Windows 上 agentcad 写 viewer.html 会用 GBK 崩溃，
-    # PYTHONUTF8=1 让子进程（build123d/ezdxf）的文件读写都走 UTF-8。
+    # 强制 UTF-8，确保项目脚本在不同宿主机区域设置下行为一致。
     env["PYTHONUTF8"] = "1"
     return env
 

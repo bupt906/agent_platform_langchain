@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import logging
 import time
+from contextlib import nullcontext
 from typing import TYPE_CHECKING, Literal
 
 from langchain_core.messages import HumanMessage, SystemMessage
@@ -93,6 +94,9 @@ def _build_router_prompt(deps: PlatformDeps) -> str:
         )
     if deps.declarative_registry:
         for skill in deps.declarative_registry.list_skills():
+            if skill.runtime_profile:
+                if not deps.runtime_manager or not deps.runtime_manager.status(skill.runtime_profile).ready:
+                    continue
             tools = ", ".join(skill.tools) if skill.tools else "无"
             skill_descriptions.append(f"- **{skill.name}**（声明式 Skill）: {skill.description}\n  可用工具: {tools}")
     skills_text = "\n".join(skill_descriptions)
@@ -181,7 +185,7 @@ async def execute_decision(
                 if declarative and deps.declarative_registry:
                     declarative_selected = True
                     reply, tokens = await _execute_declarative_skill(declarative, message, deps, model_id, invoke_cfg)
-                    decision.skill_name = f"skill:{declarative.name}"
+                    decision.skill_name = declarative.name
                 elif decision.skill_name == "general":
                     reply, tokens = await _general_response(message, deps, model_id, invoke_cfg)
                 else:
@@ -295,7 +299,7 @@ async def execute_skill_direct(
     if declarative:
         try:
             reply, tokens = await _execute_declarative_skill(declarative, message, deps, model_id, invoke_cfg)
-            skill_name = f"skill:{declarative.name}"
+            skill_name = declarative.name
         except Exception as e:
             error = str(e)
             logger.error("声明式 Skill 执行失败: %s", error, exc_info=True)
@@ -439,10 +443,18 @@ async def _execute_declarative_skill(
         **(invoke_cfg or {}),
         "recursion_limit": recursion_limit_for_tool_calls(max_calls),
     }
-    result = await agent.ainvoke(
-        {"messages": input_messages},
-        config=skill_invoke_cfg,
+    runtime_context = (
+        deps.runtime_manager.execution(skill.name, skill.runtime_profile, session_id)
+        if deps.runtime_manager
+        else nullcontext()
     )
+    if skill.runtime_profile and not deps.runtime_manager:
+        raise RuntimeError(f"Skill Runtime '{skill.runtime_profile}' 未初始化")
+    with runtime_context:
+        result = await agent.ainvoke(
+            {"messages": input_messages},
+            config=skill_invoke_cfg,
+        )
 
     complete_data = extract_complete_result(result["messages"])
     reply = complete_data.get("summary", "") or complete_data.get("detail", "") or ""

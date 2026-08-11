@@ -14,6 +14,8 @@ export interface SSEMessage {
   finish_reason?: string;
   tool_calls?: number;
   path?: string;
+  artifact_id?: string;
+  media_type?: string;
 }
 
 export function useSSE() {

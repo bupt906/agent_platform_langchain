@@ -122,7 +122,7 @@ class SessionStore:
         rows = await cursor.fetchall()
         rows = sorted(rows, key=lambda r: r[0])
         keys = ["id", "session_id", "user_message", "assistant_message", "skill_used", "model_used", "tokens_used", "duration_ms", "created_at"]
-        return [dict(zip(keys, row)) for row in rows]
+        return [dict(zip(keys, row, strict=True)) for row in rows]
 
     async def search(self, query: str, limit: int = 10) -> list[dict[str, Any]]:
         """全文搜索历史对话。"""
@@ -135,7 +135,7 @@ class SessionStore:
         )
         rows = await cursor.fetchall()
         keys = ["id", "session_id", "user_message", "assistant_message", "skill_used", "created_at"]
-        return [dict(zip(keys, row)) for row in rows]
+        return [dict(zip(keys, row, strict=True)) for row in rows]
 
     async def count_turns(self, session_id: str) -> int:
         """返回指定会话的对话轮次总数。"""

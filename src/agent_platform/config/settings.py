@@ -77,6 +77,19 @@ class Settings(BaseSettings):
     bash_max_timeout_seconds: int = 300
     bash_max_output_chars: int = 15_000
 
+    # ── Skill 安全运行时 ──
+    skill_workspace_root: Path = Path(".agent-platform/workspaces")
+    skill_artifact_root: Path = Path(".agent-platform/artifacts")
+    skill_artifact_ttl_seconds: int = 7 * 24 * 60 * 60
+    skill_artifact_max_bytes: int = 50 * 1024 * 1024
+    skill_sandbox_engine: str = "docker"
+    cad_skill_enabled: bool = True
+    cad_runtime_image: str = "agent-platform/agentcad:0.4.0"
+    cad_runtime_timeout_seconds: int = 300
+    cad_runtime_memory_mb: int = 2048
+    cad_runtime_cpus: float = 2.0
+    cad_runtime_pids_limit: int = 64
+
     # ── Human-in-the-loop ──
     hitl_enabled: bool = True  # 全局启用/禁用 HITL
     hitl_approval_timeout: int = 300  # 审批超时（秒）
@@ -84,14 +97,14 @@ class Settings(BaseSettings):
     hitl_auto_approve_low_risk: bool = False  # 自动批准低风险操作
 
     # ── 审阅回调 ──
-    callback_base_url: str = "http://192.168.22.231:28080"  # 审阅结果回调地址（为空则不发送回调）
-    callback_auth_token: str = "ABC123XYZ"  # 回调时携带的 X-Auth-Token
+    callback_base_url: str = ""  # 审阅结果回调地址（为空则不发送回调）
+    callback_auth_token: str = ""  # 回调时携带的 X-Auth-Token
 
     # ── 外部知识库（万悟平台 hit 检索接口）──
-    kb_api_base_url: str = "http://10.77.100.102:8081"  # 知识库平台地址
-    kb_api_key: str = "ww-f11218132a964b1389f56b07a3aa2f01"  # Bearer API Key
+    kb_api_base_url: str = "http://localhost:8081"  # 知识库平台地址
+    kb_api_key: str = ""  # Bearer API Key
     kb_match_type: str = "mix"  # 检索模式：vector / text / mix
-    kb_rerank_model_id: str = "2041688922286723072"  # 重排序模型 UUID（mix 模式可选）
+    kb_rerank_model_id: str = ""  # 重排序模型 UUID（mix 模式可选）
     kb_priority_match: int = 0  # 权重匹配开关（mix 模式）：0=关闭 1=开启
     kb_semantics_priority: float = 0.2  # 语义权重（priority_match=1 时生效）
     kb_keyword_priority: float = 0.8  # 关键词权重（priority_match=1 时生效）

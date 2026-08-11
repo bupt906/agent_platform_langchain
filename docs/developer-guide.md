@@ -9,11 +9,11 @@
 | | Python Agent | 声明式 Skill |
 |---|---|---|
 | **定义方式** | `agents/<name>/skill.py`（Python 类） | `skills/<name>/SKILL.md`（Markdown） |
-| **生效** | 写代码 → 重启 | 写 Markdown → 重启 |
-| **适用场景** | 需要专用数据库连接、复杂工具链 | 通用 Python 任务、调外部脚本 |
-| **例子** | `document_review` | `knowledge-graph-extraction` |
+| **生效** | 写代码 → 重启 | `SKILL.md` 变更可热刷新；工具或 Runtime 代码变更需重启 |
+| **适用场景** | 需要专用依赖、数据库连接或复杂服务编排 | 以 Prompt 和已注册工具组织的任务流程 |
+| **例子** | `document_review` | `knowledge-graph-extraction`、`cad-agentcad` |
 
-**推荐新智能体优先用声明式 Skill**，只有声明式 Skill 做不到的时候（如需要数据库连接池、调内部服务 API）才写 Python Agent。
+**推荐新能力优先用声明式 Skill**，只有声明式 Skill 做不到的时候（如需要数据库连接池、专用生命周期或内部服务依赖）才写 Python Agent。声明式不等于可以直接执行任意代码：模型生成代码必须使用独立 Runtime Profile 和容器 Sandbox。
 
 ### 平台架构（你只需要关心这些目录）
 
@@ -27,14 +27,22 @@ src/agent_platform/
 │       └── assets/           ← 可选：模板文件
 │
 ├── tools/                ← 所有 Skill 共享的工具池
-│   ├── python_exec.py        ← 沙箱化 Python 执行
-│   ├── bash_tool.py          ← 受限命令行执行
+│   ├── python_exec.py        ← 可终止的受限 Python 子进程
+│   ├── bash_tool.py          ← 仅用于可信仓库脚本的受限命令执行
 │   ├── file_tools.py         ← 文件读写
+│   ├── runtime_tools.py      ← Workspace / Sandbox / Artifact 工具
 │   ├── data_tools.py         ← 数据加载（load_data）
 │   └── registry.py           ← 全局工具注册表
 │
+├── runtime/              ← 可执行 Skill 的安全基础设施
+│   ├── manager.py            ← Runtime Profile 注册与执行上下文
+│   ├── workspace.py          ← Skill / 会话隔离工作区
+│   ├── sandbox.py            ← 容器执行、命令策略与资源限制
+│   └── artifacts.py          ← 产物发布、TTL 与随机 ID
+│
 ├── api/routes/
 │   ├── chat.py               ← /chat, /chat/stream（Agent 对话入口）
+│   ├── artifacts.py          ← /artifacts/{id}（产物访问）
 │   └── review.py             ← /review（文档审阅入口）
 │
 └── core/
@@ -79,6 +87,7 @@ name: knowledge-graph-extraction       # 唯一标识，路由用
 description: >-                         # 路由描述（LLM 看到这个决定是否匹配）
   Extract a knowledge graph ... Use this whenever ...
 tools: [read_file, write_file, bash]   # 声明需要的工具
+# runtime: profile-name               # 可选；需要隔离执行时必须声明
 ---
 # 正文：System Prompt（Agent 角色定义 + 工作流程）
 ```
@@ -86,7 +95,8 @@ tools: [read_file, write_file, bash]   # 声明需要的工具
 **关键点**：
 - `name`：英文，短横线分隔，用作 `skill` 参数值
 - `description`：一句英文描述，LLM 路由器根据这个判断用户意图是否匹配
-- `tools`：从全局工具池中选，填工具名即可。当前可用：`execute_python`、`bash`、`read_file`、`write_file`、`edit_file`
+- `tools`：从全局工具池中选，填工具名即可。常用工具包括 `execute_python`、`bash`、`read_file`、`write_file`、`edit_file`；隔离 Runtime 使用 `workspace_read`、`workspace_write`、`workspace_list`、`sandbox_run`、`publish_artifact`
+- `runtime`：可选的服务端 Runtime Profile 名称。凡是需要运行模型生成代码或不可信第三方 CLI 的 Skill 都必须声明
 - 正文：Agent关于这个SKILL该做的事
 
 ### ② assets/ — 示例和模板
@@ -119,7 +129,7 @@ Agent 执行时这些内容直接在 system prompt 里，不需要再调工具�
 
 ### ④ scripts/ — 辅助脚本
 
-Agent 通过 `bash` 工具调用这些脚本：
+这些脚本属于仓库中经过代码审查的可信代码，Agent 可通过受限 `bash` 工具调用：
 
 ```
 Agent: "我需要把大文档切片" → bash("python scripts/chunk_document.py ...")
@@ -128,6 +138,8 @@ Agent: "校验图的质量"       → bash("python scripts/validate_graph.py ...
 ```
 
 脚本用法写在 SKILL.md 正文里，Agent 读 prompt 就知道什么时候调用哪个脚本。
+
+不要让 `write_file` 生成新的 `.py` 后再交给 `bash` 执行：全局文件工具会拒绝创建或编辑 Python 文件。模型动态生成的代码应放入隔离 Workspace，并通过 `sandbox_run` 在对应 Runtime 镜像内执行。
 
 ---
 
@@ -143,14 +155,16 @@ Agent: "校验图的质量"       → bash("python scripts/validate_graph.py ...
 | 书写文件 | `execute_python`（python-docx） | ❌ → 需要新工具 |
 | 运行代码 | `execute_python` （部分）| ❌ → 需要新工具 |
 
-如果 `execute_python` + `bash` + `read_file` + `write_file` + `edit_file` 够用，**零代码**，只写 SKILL.md。
+如果只需要文本文件、受限数据处理和已审查的仓库脚本，使用现有工具并只写 `SKILL.md` 即可。
+
+如果需要执行模型生成代码或第三方 CLI，不要把命令加入全局 `bash` 白名单；应创建 Runtime Profile。具体流程见 [六、可执行 Skill 与 Runtime Profile](#六可执行-skill-与-runtime-profile)。
 
 如果不够，开发需要的 `@tool`工具，然后在 `tools/__init__.py` 的 `register_all_declarative_tools()` 里注册。构建工具的具体流程见 [五、工具](#五工具)。
 
 ### Step 2：创建目录
 
 ```bash
-mkdir -p skills/knowledge-graph-extraction
+mkdir -p src/agent_platform/skills/knowledge-graph-extraction
 ```
 
 ### Step 3：写 SKILL.md 的 YAML frontmatter
@@ -254,6 +268,8 @@ def bash(command: str, working_directory: str = "", timeout: int = 0) -> str:
 - 不向子进程传递密钥类环境变量。
 
 可调整项统一放在 `src/agent_platform/config/settings.py`，不要写死在工具函数中。
+
+这里的 `bash` 只适合调用仓库内已审查、不可由模型改写的辅助脚本。不要通过新增全局命令白名单来接入 CAD、代码生成器或其他会执行模型输入的工具；这类能力必须使用 Runtime Profile。
 
 #### 3. 注册工具
 
@@ -366,13 +382,70 @@ completed = subprocess.run(
 
 `subprocess.run()` 默认为 `shell=False`：它直接执行 `args[0]` 指定的程序，不会把命令交给 Bash/Sh 解析。因此 `|`、`>`、`&&` 等 Shell 语法不可用，工具也会在执行前拒绝它们。
 
-### TODO
+---
 
-- 统一面向对象的tool开发规则
+## 六、可执行 Skill 与 Runtime Profile
+
+当 Skill 需要运行模型生成代码或不可信第三方 CLI 时，使用以下安全边界：
+
+```text
+SKILL.md
+  └─ runtime: profile-name
+       └─ SkillRuntimeManager（服务端批准的策略）
+            ├─ Workspace（按 Skill + session 隔离）
+            ├─ Container Sandbox（无网络、只读根文件系统、资源限额）
+            └─ Artifact Store（复制发布、随机 ID、TTL）
+```
+
+### 1. 注册 Runtime Profile
+
+在 `src/agent_platform/runtime/manager.py` 中注册 Profile，至少明确：
+
+- 固定版本或 digest 的容器镜像。
+- 允许的可执行文件和子命令；不要接受任意 shell。
+- Workspace 允许写入的扩展名。
+- 网络策略、执行超时、CPU、内存和进程数上限。
+
+CAD Profile 是当前参考实现：它只允许有限的 `agentcad` 子命令和镜像内置 viewer helper，默认无网络、只读根文件系统，并且只挂载当前会话的 Workspace。
+
+### 2. 在 SKILL.md 声明运行时工具
+
+```yaml
+---
+name: executable-example
+description: Run an isolated example workflow when ...
+tools: [workspace_read, workspace_write, workspace_list, sandbox_run, publish_artifact]
+runtime: executable-example
+complete_tool: complete_task
+---
+```
+
+工具职责：
+
+| 工具 | 用途 |
+| --- | --- |
+| `workspace_write` | 按 Profile 的扩展名策略写入当前隔离工作区 |
+| `workspace_read` / `workspace_list` | 读取或列出当前工作区内容，拒绝路径穿越 |
+| `sandbox_run` | 在 Profile 指定的容器及命令白名单中执行 |
+| `publish_artifact` | 将工作区文件复制到 Artifact Store，返回公开 `artifact_id` |
+
+Skill 的最终回复应报告 Artifact ID，不应暴露 Workspace 或宿主机路径。HTML Artifact 由 `/artifacts/{artifact_id}` 返回，服务端设置 CSP 和 `nosniff`，前端使用受限 iframe 预览。
+
+### 3. 镜像与部署
+
+- Runtime 镜像定义放在 `docker/<runtime>/`。
+- 构建时固定顶层依赖版本，并在镜像构建阶段验证依赖的必要 API。
+- 多 worker / 多实例环境应将 `SKILL_ARTIFACT_ROOT` 挂载为共享持久卷。
+- `GET /skills` 会返回 `ready`、`runtime_profile`、`runtime_backend` 和不可用原因。Runtime 未就绪时显式请求会安全降级，不会改走宿主机。
+- CAD 的完整部署方式见 [CAD Skill 隔离运行时部署说明](agentcad-部署说明.md)。
+
+### 4. 安全测试最低要求
+
+可执行 Skill 至少覆盖：路径穿越、禁止扩展名、未批准命令/子命令、超时终止、无 Runtime 降级、Artifact ID 持久解析和 HTML 安全响应头。
 
 ---
 
-## 六、快速参考
+## 七、快速参考
 
 ### 新建 Skill 最少需要
 
@@ -386,8 +459,16 @@ skills/<name>/SKILL.md    ← 必需
 skills/<name>/
 ├── SKILL.md              ← 必需
 ├── references/*.md       ← 领域知识，自动注入 prompt
-├── scripts/*.py          ← 辅助脚本，Agent 通过 bash 调用
+├── scripts/*.py          ← 仅限仓库内已审查的可信辅助脚本
 └── assets/*              ← 模板文件，Agent 通过 read_file 读取
+```
+
+需要执行模型生成代码时，另外增加：
+
+```text
+docker/<runtime>/Dockerfile
+src/agent_platform/runtime/manager.py 中的 Runtime Profile
+SKILL.md frontmatter 中的 runtime 与 Runtime 工具
 ```
 
 ### 开发检查清单
@@ -395,6 +476,11 @@ skills/<name>/
 - [ ] SKILL.md 的 `name` 唯一且用英文
 - [ ] `description` 清楚地写了"什么时候用这个 Skill"
 - [ ] `tools` 声明了所有需要的工具
+- [ ] 模型生成代码或第三方 CLI 使用独立 Runtime Profile，而非全局 `bash`
+- [ ] Runtime 镜像固定版本，命令、网络和资源策略采用最小权限
+- [ ] 输出通过 `publish_artifact` 发布，不暴露本地路径
+- [ ] `/skills` 在 Runtime 可用和不可用时均返回正确 readiness
 - [ ] 正文（body）有明确的工作流程
 - [ ] `curl` 测试通过：显式指定 `skill` 参数
 - [ ] 自动路由测试：不传 `skill`，LLM 能正确匹配
+- [ ] `ruff check src tests`、`pytest -q` 和前端构建通过

@@ -38,7 +38,7 @@ class SkillRegistry:
 
     def auto_discover(self, package_name: str = "agent_platform.agents") -> None:
         package = importlib.import_module(package_name)
-        for importer, modname, ispkg in pkgutil.iter_modules(
+        for _importer, modname, ispkg in pkgutil.iter_modules(
             package.__path__, package.__name__ + "."
         ):
             if not ispkg:

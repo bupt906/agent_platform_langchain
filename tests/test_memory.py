@@ -5,7 +5,7 @@ from __future__ import annotations
 import aiosqlite
 import pytest
 
-from agent_platform.memory import ConversationSummarizer, SessionStore, UserProfileStore
+from agent_platform.memory import SessionStore, UserProfileStore
 
 
 @pytest.fixture

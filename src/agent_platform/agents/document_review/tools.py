@@ -99,8 +99,10 @@ def _parse_docx(path: Path) -> str:
         doc = Document(str(path))
         paragraphs = [p.text for p in doc.paragraphs if p.text.strip()]
         return "\n".join(paragraphs)
-    except ImportError:
-        raise ImportError("python-docx 未安装，无法解析 docx 文件。请运行: pip install python-docx")
+    except ImportError as exc:
+        raise ImportError(
+            "python-docx 未安装，无法解析 docx 文件。请运行: pip install python-docx"
+        ) from exc
 
 
 def _parse_doc(path: Path) -> str:

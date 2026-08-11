@@ -12,11 +12,13 @@ def register_all_declarative_tools():
     from agent_platform.tools.data_tools import register_data_tools
     from agent_platform.tools.file_tools import register_file_tools
     from agent_platform.tools.python_exec import register_python_tool
+    from agent_platform.tools.runtime_tools import register_runtime_tools
 
     register_python_tool()
     register_data_tools()
     register_file_tools()
     register_bash_tool()
+    register_runtime_tools()
     for tool in all_complete_tools():
         register(tool)
 

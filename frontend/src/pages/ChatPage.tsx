@@ -13,7 +13,7 @@ const suggestedPrompts = [
 
 type Activity = { kind: "route" | "tool" | "status"; label: string; detail?: string };
 type ChatTurn = { id: string; role: "user" | "assistant"; content: string; reasoning: string; activities: Activity[]; pending?: boolean; stopped?: boolean; error?: string; viewerPath?: string };
-type SelectOption = { name: string; description: string; label?: string };
+type SelectOption = { name: string; description: string; label?: string; ready?: boolean; unavailableReason?: string };
 
 function createTurn(role: ChatTurn["role"], content = ""): ChatTurn {
   return { id: crypto.randomUUID(), role, content, reasoning: "", activities: [] };
@@ -50,17 +50,19 @@ export default function ChatPage() {
     bottomRef.current?.scrollIntoView({ behavior: "smooth" });
   }, [turns, isStreaming]);
 
-  const agentChoices = useMemo(() => skills.filter((skill) => !skill.name.includes("-")), [skills]);
-  const skillChoices = useMemo(() => [{ name: "knowledge-graph-extraction", description: "从文档抽取知识图谱", label: "knowledge-graph-extraction" }, ...skills.filter((skill) => skill.name.includes("-")).map((skill) => skill.ready === false ? { name: skill.name, description: `${skill.name}（未安装依赖，请运行 setup_agentcad.sh 安装 agentcad）`, label: `${skill.name}（需安装 agentcad）` } : { name: skill.name, description: skill.description, label: skill.name })], [skills]);
+  const agentChoices = useMemo(() => skills.filter((skill) => skill.kind === "agent"), [skills]);
+  const skillChoices = useMemo(() => skills.filter((skill) => skill.kind === "skill").map((skill) => {
+    const unavailableReason = skill.runtime_reason || skill.unavailable_reason || (skill.missing_tools?.length ? `缺少工具：${skill.missing_tools.join("、")}` : undefined);
+    return { name: skill.name, description: skill.description, label: skill.ready === false ? `${skill.name}（不可用）` : skill.name, ready: skill.ready, unavailableReason };
+  }), [skills]);
 
   const handleSend = (prompt = input) => {
     const text = prompt.trim();
     if (!text || isStreaming || text.length > MAX_INPUT_LENGTH) return;
-    // 选中的 skill 未就绪（如未装 agentcad）时阻止发送
     if (selectedSkill) {
       const choice = skillChoices.find((o) => o.name === selectedSkill);
-      if (choice?.description?.includes("未安装依赖")) {
-        alert("该 Skill 未安装依赖（agentcad）。请先运行 bash setup_agentcad.sh 安装后再使用。");
+      if (choice?.ready === false) {
+        alert(`该 Skill 当前不可用：${choice.unavailableReason || "运行环境未就绪"}`);
         return;
       }
     }
@@ -133,7 +135,7 @@ function CadViewer({ path }: { path: string }) {
   const [expanded, setExpanded] = useState(false);
   const [containerWidth, setContainerWidth] = useState(0);
   const containerRef = useRef<HTMLDivElement>(null);
-  const src = `${apiUrl("/viewer")}?path=${encodeURIComponent(path)}`;
+  const src = apiUrl(`/artifacts/${encodeURIComponent(path)}`);
   const VIEWER_BASE_W = 1100;
   const VIEWER_BASE_H = 620;
   const scale = containerWidth > 0 ? Math.min(1, containerWidth / VIEWER_BASE_W) : 1;
@@ -159,6 +161,7 @@ function CadViewer({ path }: { path: string }) {
             title="CAD 3D Viewer"
             className="origin-top-left border-0"
             sandbox="allow-scripts"
+            referrerPolicy="no-referrer"
             style={{ width: VIEWER_BASE_W, height: VIEWER_BASE_H, transform: `scale(${scale})` }}
           />
         </div>
@@ -173,10 +176,9 @@ function Composer({ input, setInput, inputRef, isStreaming, onSend, onStop, sele
 
 function ExecutionSettings({ selectedAgent, setSelectedAgent, selectedSkill, setSelectedSkill, agentChoices, skillChoices, thinking, setThinking, skillsError }: { selectedAgent: string; setSelectedAgent: (value: string) => void; selectedSkill: string; setSelectedSkill: (value: string) => void; agentChoices: SkillInfo[]; skillChoices: SelectOption[]; thinking: boolean; setThinking: (value: boolean) => void; skillsError: boolean }) {
   const autoRoute = !selectedAgent && !selectedSkill;
-  // 选中了未就绪的 skill（如 cad-agentcad 但未装 agentcad）时显示警告
   const selectedChoice = skillChoices.find((o) => o.name === selectedSkill);
-  const blocked = Boolean(selectedChoice?.description?.includes("未安装依赖"));
-  return <div className="flex flex-wrap items-center gap-2 border-b border-slate-100 bg-slate-50/70 px-3 py-2"><div className="flex items-center gap-1.5 pr-1 text-[11px] font-semibold tracking-[.08em] text-slate-400"><Route size={14} />执行</div><SettingSelect label="Agent" value={selectedAgent} onChange={(value) => { setSelectedAgent(value); if (value) setSelectedSkill(""); }} options={[{ name: "", description: "选择 Agent" }, ...agentChoices]} compact /><SettingSelect label="Skill" value={selectedSkill} onChange={(value) => { setSelectedSkill(value); if (value) setSelectedAgent(""); }} options={[{ name: "", description: "选择 Skill" }, ...skillChoices]} compact /><div className="hidden h-5 w-px bg-slate-200 sm:block" /><label className={`flex cursor-pointer items-center gap-2 rounded-lg px-2 py-1.5 text-xs font-medium transition ${thinking ? "bg-violet-100/70 text-violet-700" : "text-slate-500 hover:bg-white hover:text-slate-700"}`}><input type="checkbox" checked={thinking} onChange={(event) => setThinking(event.target.checked)} className="sr-only" /><span className={`flex h-4 w-7 items-center rounded-full p-0.5 transition ${thinking ? "bg-violet-500" : "bg-slate-200"}`}><span className={`h-3 w-3 rounded-full bg-white shadow-sm transition ${thinking ? "translate-x-3" : ""}`} /></span><BrainCircuit size={14} />推理</label><span className={`ml-auto inline-flex items-center gap-1.5 rounded-md px-2 py-1 text-[11px] font-medium ${autoRoute ? "text-blue-600" : "text-emerald-600"}`}><Sparkles size={13} />{autoRoute ? "自动路由" : "已指定"}</span>{skillsError && <span className="w-full pt-0.5 text-[11px] text-amber-600">Agent 列表加载失败，仍可使用自动路由。</span>}{blocked && <span className="w-full rounded-md bg-amber-50 px-2 py-1.5 text-[11px] text-amber-700">⚠️ 该 Skill 未安装依赖（agentcad），请先运行 <code className="rounded bg-amber-100 px-1">bash setup_agentcad.sh</code> 安装后再使用。</span>}</div>;
+  const blocked = selectedChoice?.ready === false;
+  return <div className="flex flex-wrap items-center gap-2 border-b border-slate-100 bg-slate-50/70 px-3 py-2"><div className="flex items-center gap-1.5 pr-1 text-[11px] font-semibold tracking-[.08em] text-slate-400"><Route size={14} />执行</div><SettingSelect label="Agent" value={selectedAgent} onChange={(value) => { setSelectedAgent(value); if (value) setSelectedSkill(""); }} options={[{ name: "", description: "选择 Agent" }, ...agentChoices]} compact /><SettingSelect label="Skill" value={selectedSkill} onChange={(value) => { setSelectedSkill(value); if (value) setSelectedAgent(""); }} options={[{ name: "", description: "选择 Skill" }, ...skillChoices]} compact /><div className="hidden h-5 w-px bg-slate-200 sm:block" /><label className={`flex cursor-pointer items-center gap-2 rounded-lg px-2 py-1.5 text-xs font-medium transition ${thinking ? "bg-violet-100/70 text-violet-700" : "text-slate-500 hover:bg-white hover:text-slate-700"}`}><input type="checkbox" checked={thinking} onChange={(event) => setThinking(event.target.checked)} className="sr-only" /><span className={`flex h-4 w-7 items-center rounded-full p-0.5 transition ${thinking ? "bg-violet-500" : "bg-slate-200"}`}><span className={`h-3 w-3 rounded-full bg-white shadow-sm transition ${thinking ? "translate-x-3" : ""}`} /></span><BrainCircuit size={14} />推理</label><span className={`ml-auto inline-flex items-center gap-1.5 rounded-md px-2 py-1 text-[11px] font-medium ${autoRoute ? "text-blue-600" : "text-emerald-600"}`}><Sparkles size={13} />{autoRoute ? "自动路由" : "已指定"}</span>{skillsError && <span className="w-full pt-0.5 text-[11px] text-amber-600">Agent 列表加载失败，仍可使用自动路由。</span>}{blocked && <span className="w-full rounded-md bg-amber-50 px-2 py-1.5 text-[11px] text-amber-700">⚠️ 该 Skill 当前不可用：{selectedChoice?.unavailableReason || "运行环境未就绪"}</span>}</div>;
 }
 
 function SettingSelect({ label, value, onChange, options, compact = false }: { label: string; value: string; onChange: (value: string) => void; options: SelectOption[]; compact?: boolean }) {

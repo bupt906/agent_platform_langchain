@@ -7,7 +7,6 @@ from pathlib import Path
 
 import pytest
 
-
 # ── 示例 SKILL.md ────────────────────────────────────────────
 
 _KG_SKILL_MD = """---
@@ -241,8 +240,8 @@ class TestSkillAgentBuilder:
         assert recursion_limit_for_tool_calls(200) == 405
 
     def test_build_prompt_includes_body(self, skills_dir):
-        from agent_platform.skills.registry import DeclarativeSkillRegistry
         from agent_platform.skills.builder import _build_prompt
+        from agent_platform.skills.registry import DeclarativeSkillRegistry
 
         reg = DeclarativeSkillRegistry(skills_dir)
         skill = reg.get("knowledge-graph-extraction")
@@ -255,8 +254,8 @@ class TestSkillAgentBuilder:
         assert "应优先复用这些现有内容" in prompt
 
     def test_max_tool_calls_replaced(self, skills_dir):
-        from agent_platform.skills.registry import DeclarativeSkillRegistry
         from agent_platform.skills.builder import _build_prompt
+        from agent_platform.skills.registry import DeclarativeSkillRegistry
 
         reg = DeclarativeSkillRegistry(skills_dir)
         skill = reg.get("knowledge-graph-extraction")
@@ -589,7 +588,7 @@ class TestFileTools:
 
 class TestDataStore:
     def test_save_and_load(self):
-        from agent_platform.tools.data_store import save_dataframe, load_dataframe
+        from agent_platform.tools.data_store import load_dataframe, save_dataframe
 
         sid = "test_session"
         save_dataframe(sid, "sql_abc", [{"name": "Alice"}, {"name": "Bob"}])
@@ -598,7 +597,7 @@ class TestDataStore:
         assert rows[0]["name"] == "Alice"
 
     def test_session_isolation(self):
-        from agent_platform.tools.data_store import save_dataframe, load_dataframe
+        from agent_platform.tools.data_store import load_dataframe, save_dataframe
 
         save_dataframe("s1", "k1", [{"a": 1}])
         save_dataframe("s2", "k1", [{"a": 2}])

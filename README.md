@@ -10,10 +10,11 @@
 | 流式执行反馈 | 对话通过 SSE 流式返回回答、路由结果、工具调用与可选的模型推理过程。 |
 | 智能文档审阅 | 按句审阅文档，检索外部知识库，异步回调任务状态与审阅结果。 |
 | 知识图谱抽取 | 通过声明式 Skill 从文档抽取实体、关系并生成图谱数据。 |
+| CAD 参数化建模 | 通过隔离容器中的声明式 Skill 生成、检查和预览 STEP 等 CAD 产物。 |
 | 多 Agent 编排 | 支持顺序、并行、动态编排，以及需要人工确认的执行流程。 |
 | 记忆与偏好 | 保存会话、用户画像和工作台偏好；偏好包括主题、默认模型与 API 地址。 |
 | 运营与用量 | 基于审计日志查看调用量、成功率、耗时、Token 消耗和近期活动。 |
-| MCP 与工具运行时 | 支持 MCP Server、工具超时、限流、调用预算、受限文件与命令执行。 |
+| MCP 与 Skill 运行时 | 支持 MCP Server、工具超时、限流、调用预算、隔离 Workspace、容器 Sandbox 与 Artifact。 |
 
 ## 快速开始
 
@@ -22,6 +23,7 @@
 - Python 3.11+
 - Node.js LTS（仅运行 Web 前端时需要）
 - 至少一个模型服务的 API Key，例如 DeepSeek、Qwen 或 OpenAI
+- Docker 或兼容容器引擎（仅使用 CAD 等需要隔离 Runtime 的 Skill 时需要）
 
 ```bash
 git clone <your-repository-url>
@@ -42,6 +44,14 @@ DEEPSEEK_API_KEY=你的_API_Key
 ```
 
 > 不要提交 `.env`、数据库文件或任何 API Key。
+
+如果需要使用 CAD Skill，额外构建固定版本的隔离运行时：
+
+```bash
+bash setup_agentcad.sh
+```
+
+详细配置见 [CAD Skill 隔离运行时部署说明](docs/agentcad-部署说明.md)。镜像未就绪时，`/skills` 会把 CAD 标记为不可用，平台不会回退到宿主机执行模型生成代码。
 
 ### 2. 启动后端
 
@@ -81,6 +91,7 @@ npm run dev
 | `POST` | `/chat` | 同步对话 |
 | `POST` | `/chat/stream` | SSE 流式对话，供 Web 对话页使用 |
 | `GET` | `/skills` | 获取可用 Agent 与 Skill |
+| `GET` | `/artifacts/{artifact_id}` | 访问 Skill 发布的安全产物或预览 |
 | `POST` | `/review` | 提交异步文档审阅任务 |
 | `GET` | `/audit` | 查询审计记录 |
 | `GET` | `/audit/stats` | 获取运营统计 |
@@ -140,7 +151,7 @@ curl -X POST http://localhost:8000/review \
   }'
 ```
 
-审阅结果可通过 `/api/callback/batch/{task_id}` 查询。外部知识库连接参数请在 `.env` 中配置，具体协议见 [知识库接口文档](docs/知识库接口文档.md)。
+审阅结果可通过 `/api/callback/batch/{task_id}` 查询。外部知识库连接参数通过 `.env` 中的 `KB_*` 配置；接口字段和在线调试以启动后的 OpenAPI `/docs` 为准。
 
 ### 工作台偏好
 
@@ -167,25 +178,27 @@ frontend/                     React + Vite 工作台
 src/agent_platform/
 ├── api/                      FastAPI、SSE、审阅/偏好/审计等接口
 ├── agents/                   Python Agent（当前包含文档审阅）
-├── skills/                   声明式 Skill（当前包含知识图谱抽取）
+├── skills/                   声明式 Skill（当前包含知识图谱抽取与 CAD）
+├── runtime/                  Skill Workspace、Runtime Profile、Sandbox 与 Artifact
 ├── core/                     注册中心、意图路由与依赖容器
 ├── graph/                    多 Agent 编排
 ├── models/                   DeepSeek、Qwen、OpenAI、Ollama 适配
 ├── memory/                   会话、摘要与用户画像持久化
 ├── audit/                    审计记录与统计
 ├── hitl/                     Human-in-the-Loop 审批
-├── tools/                    文件、命令、Python 沙箱及运行时控制
+├── tools/                    文件、可信脚本、Python 子进程及 Runtime 工具
 └── mcp_servers/              MCP Server 注册与动态加载
 tests/                        后端测试
-docs/                         深入开发与外部知识库文档
+docker/                       Skill Runtime 镜像定义
+docs/                         开发指南与专项部署说明
 ```
 
 一次对话的主要流程：
 
 1. 前端发送问题及可选的 Agent、Skill、模型、会话和偏好 ID。
 2. 若未指定能力，路由器执行意图识别并选择通用回答、Skill 或编排计划。
-3. Agent / Skill 调用模型、工具、知识库或 MCP 服务。
-4. SSE 将路由、工具动态和回答持续返回给前端。
+3. Agent / Skill 调用模型、工具、知识库或 MCP 服务；声明 Runtime 的 Skill 会进入隔离 Workspace 和容器 Sandbox。
+4. SSE 将路由、工具动态、Artifact 和回答持续返回给前端。
 5. 会话、用户偏好与审计指标按配置持久化。
 
 ## 重要配置
@@ -202,12 +215,17 @@ docs/                         深入开发与外部知识库文档
 | `RATE_LIMIT_PER_MINUTE` | 每个 IP 每分钟的最大请求数，`0` 为不限流 |
 | `KB_API_BASE_URL` / `KB_API_KEY` | 外部知识库服务地址与凭据 |
 | `CALLBACK_BASE_URL` / `CALLBACK_AUTH_TOKEN` | 文档审阅任务的回调地址与鉴权信息 |
+| `SKILL_WORKSPACE_ROOT` / `SKILL_ARTIFACT_ROOT` | 隔离工作区与已发布产物根目录 |
+| `SKILL_SANDBOX_ENGINE` | Skill 容器运行时，默认 `docker` |
+| `CAD_RUNTIME_IMAGE` | CAD Runtime 的固定版本镜像 |
 
 生产部署前请至少完成以下事项：
 
 - 使用环境变量或密钥管理服务配置凭据，不在代码或镜像中保存密钥。
 - 将 CORS 允许来源限制为实际前端域名。
 - 为 SQLite 数据库设置备份、保留和访问权限策略；高并发场景建议替换为外部数据库。
+- 多 worker / 多实例部署时，为 `SKILL_ARTIFACT_ROOT` 配置共享持久卷。
+- 可执行 Skill 应使用独立 Runtime Profile 和不可变镜像，不要扩大全局 `bash` 白名单。
 - 通过反向代理提供 HTTPS，并为 API 设置合适的认证与限流策略。
 
 ## 开发、测试与扩展
@@ -226,8 +244,9 @@ npm run build
 ```
 
 - 添加 Python Agent：在 `src/agent_platform/agents/` 下创建目录，注册中心会自动发现。
-- 添加声明式 Skill：在 `src/agent_platform/skills/` 下创建包含 `SKILL.md` 的目录。
+- 添加声明式 Skill：在 `src/agent_platform/skills/` 下创建包含 `SKILL.md` 的目录；需要执行模型生成代码时必须同时定义 Runtime Profile。
 - 配置或扩展 MCP：编辑 [mcp_config.json](mcp_config.json)。
+- 完整扩展规则见 [开发者指南](docs/developer-guide.md)。
 
 ## 许可与安全说明
 

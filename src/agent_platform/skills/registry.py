@@ -26,6 +26,7 @@ class DeclarativeSkill:
     tools: list[str] = field(default_factory=list)
     body: str = ""
     complete_tool: str = "complete_task"
+    runtime_profile: str | None = None
     source_dir: Path | None = None
 
     @property
@@ -58,6 +59,7 @@ class DeclarativeSkill:
             "name": self.name,
             "description": self.description,
             "tools": self.tools,
+            "runtime_profile": self.runtime_profile,
         }
 
 
@@ -156,6 +158,11 @@ class DeclarativeSkillRegistry:
         complete_tool = frontmatter.get("complete_tool", "complete_task")
         if not isinstance(complete_tool, str) or not complete_tool.strip():
             raise RuntimeError(f"{md_path}: 'complete_tool' 必须是非空字符串")
+        runtime_profile = frontmatter.get("runtime")
+        if runtime_profile is not None and (
+            not isinstance(runtime_profile, str) or not runtime_profile.strip()
+        ):
+            raise RuntimeError(f"{md_path}: 'runtime' 必须是非空字符串")
 
         return DeclarativeSkill(
             name=name,
@@ -163,6 +170,7 @@ class DeclarativeSkillRegistry:
             tools=tools,
             body=body.strip(),
             complete_tool=complete_tool,
+            runtime_profile=runtime_profile.strip() if runtime_profile else None,
             source_dir=skill_dir,
         )
 

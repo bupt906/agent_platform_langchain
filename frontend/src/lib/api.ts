@@ -17,6 +17,10 @@ export interface SkillInfo {
   tools?: string[];
   ready?: boolean;
   missing_tools?: string[];
+  unavailable_reason?: string;
+  runtime_profile?: string;
+  runtime_backend?: string;
+  runtime_reason?: string;
 }
 
 export interface AuditStats {

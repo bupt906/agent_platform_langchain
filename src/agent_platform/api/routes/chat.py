@@ -2,14 +2,12 @@ from __future__ import annotations
 
 import json
 import logging
-import secrets
 from collections.abc import AsyncIterator, Iterator, Mapping
+from contextlib import nullcontext
 from dataclasses import dataclass, replace
-from pathlib import Path
 from typing import Any
 
-from fastapi import APIRouter, HTTPException, Request
-from fastapi.responses import HTMLResponse
+from fastapi import APIRouter, Request
 from langchain_core.messages import HumanMessage, SystemMessage
 from sse_starlette.sse import EventSourceResponse
 
@@ -27,46 +25,6 @@ from agent_platform.graph.orchestration import OrchestrationEngine
 logger = logging.getLogger(__name__)
 
 router = APIRouter()
-
-
-# ── viewer 安全注册表 ─────────────────────────────────────────
-# 服务端生成不可猜测的 ID 映射到真实的 viewer.html 路径，前端只拿 ID，
-# 不暴露本地文件路径。同时只允许 CAD 专用输出目录下的文件。
-_viewer_registry: dict[str, str] = {}
-
-
-def _register_viewer(path: str) -> str:
-    """把 viewer.html 路径注册为不可猜测 ID，返回该 ID。
-
-    仅接受 CAD 输出目录（cad_output/）下的 .html 文件，其他路径拒绝。
-    调用方（skill 执行流程）在生成 viewer 后注册，前端凭 ID 访问。
-    """
-    resolved = Path(path).resolve()
-    # 只允许 cad_output 目录下的文件
-    cad_root = (Path.cwd() / "cad_output").resolve()
-    if not resolved.is_relative_to(cad_root):
-        raise HTTPException(status_code=403, detail="viewer 必须在 CAD 输出目录内")
-    if resolved.suffix.lower() != ".html":
-        raise HTTPException(status_code=400, detail="仅支持 .html 文件")
-    if not resolved.exists():
-        raise HTTPException(status_code=404, detail="viewer 文件不存在")
-
-    file_id = secrets.token_urlsafe(16)
-    _viewer_registry[file_id] = str(resolved)
-    return file_id
-
-
-@router.get("/viewer/{file_id}", response_class=HTMLResponse)
-async def viewer_html(file_id: str):
-    """通过不可猜测 ID 返回 CAD viewer.html 内容，供前端 iframe 展示。
-
-    不接收任意本地路径，只接受由 _register_viewer 生成的 ID，避免
-    恶意 Skill 写入任意 HTML 后被同源 iframe 加载（存储型 XSS）。
-    """
-    path = _viewer_registry.get(file_id)
-    if not path:
-        raise HTTPException(status_code=404, detail="viewer 不存在或已过期")
-    return HTMLResponse(Path(path).read_text(encoding="utf-8"))
 
 
 @dataclass(frozen=True)
@@ -107,6 +65,9 @@ def _resolve_single_target(
             reason = f"declarative_skill_unavailable: {unavailable_reason}" if unavailable_reason else "skill_not_found"
             logger.warning("声明式 Skill '%s' 不可用，降级为通用对话: %s", skill_name, reason)
             return SingleTargetResolution(None, None, "general", skill_name, reason)
+        runtime_reason = _runtime_unavailable_reason(deps, declarative)
+        if runtime_reason:
+            return SingleTargetResolution(None, None, "general", skill_name, runtime_reason)
         return SingleTargetResolution(None, declarative, "skill")
 
     skill = deps.skill_registry.get(skill_name)
@@ -114,6 +75,9 @@ def _resolve_single_target(
         return SingleTargetResolution(skill, None, "agent")
     declarative = deps.declarative_registry.get(skill_name) if deps.declarative_registry else None
     if declarative:
+        runtime_reason = _runtime_unavailable_reason(deps, declarative)
+        if runtime_reason:
+            return SingleTargetResolution(None, None, "general", skill_name, runtime_reason)
         return SingleTargetResolution(None, declarative, "skill")
     if skill_name == "general":
         return SingleTargetResolution(None, None, "general")
@@ -124,6 +88,18 @@ def _resolve_single_target(
     reason = f"declarative_skill_unavailable: {unavailable_reason}" if unavailable_reason else "skill_not_found"
     logger.warning("自动路由目标 Skill '%s' 不可用，降级为通用对话: %s", skill_name, reason)
     return SingleTargetResolution(None, None, "general", skill_name, reason)
+
+
+def _runtime_unavailable_reason(deps: PlatformDeps, skill: Any) -> str | None:
+    """返回声明式 Skill 的运行时不可用原因；无 Runtime Profile 时不限制。"""
+    if not skill.runtime_profile:
+        return None
+    if not deps.runtime_manager:
+        return "skill_runtime_unavailable: runtime_manager_unavailable"
+    status = deps.runtime_manager.status(skill.runtime_profile)
+    if status.ready:
+        return None
+    return f"skill_runtime_unavailable: {status.reason or status.profile}"
 
 
 async def _apply_saved_preferences(body: ChatRequest, deps: PlatformDeps) -> ChatRequest:
@@ -373,39 +349,48 @@ async def chat_stream(request: Request, body: ChatRequest) -> EventSourceRespons
 
             final_reply = ""
             try:
-                async for event in agent.astream_events(
-                    {"messages": input_messages},
-                    version="v2",
-                    config=invoke_cfg,
-                ):
-                    if event["event"] == "on_chat_model_stream":
-                        for event_type, content in _chunk_deltas(event["data"]["chunk"]):
-                            yield _sse(
-                                event_type,
-                                type=event_type,
-                                content=content,
-                            )
-                    else:
-                        # 检测 agentcad run 生成的 viewer，注册为不可猜测 ID 后
-                        # 发给前端（不暴露真实文件路径，防存储型 XSS）
-                        viewer_path = _extract_viewer_path(event)
-                        if viewer_path:
-                            try:
-                                viewer_id = _register_viewer(viewer_path)
-                                yield _sse("cad_viewer", type="cad_viewer", path=viewer_id)
-                            except HTTPException:
-                                logger.warning("viewer 路径未通过安全校验，忽略: %s", viewer_path)
+                runtime_context = (
+                    deps.runtime_manager.execution(
+                        declarative.name,
+                        declarative.runtime_profile,
+                        invoke_cfg["configurable"]["thread_id"],
+                    )
+                    if deps.runtime_manager
+                    else nullcontext()
+                )
+                with runtime_context:
+                    async for event in agent.astream_events(
+                        {"messages": input_messages},
+                        version="v2",
+                        config=invoke_cfg,
+                    ):
+                        if event["event"] == "on_chat_model_stream":
+                            for event_type, content in _chunk_deltas(event["data"]["chunk"]):
+                                yield _sse(event_type, type=event_type, content=content)
+                        else:
+                            artifact = _extract_artifact(event)
+                            if artifact:
+                                yield _sse("artifact", type="artifact", **artifact)
+                                if (
+                                    declarative.name == "cad-agentcad"
+                                    and artifact.get("media_type") == "text/html"
+                                ):
+                                    yield _sse(
+                                        "cad_viewer",
+                                        type="cad_viewer",
+                                        path=artifact["artifact_id"],
+                                    )
 
-                        tool_event = _tool_event_data(event)
-                        if tool_event:
-                            event_type, data = tool_event
-                            yield _sse(event_type, **data)
-                        elif event["event"] == "on_chat_model_end":
-                            yield _sse("model_end", **_model_end_data(event))
+                            tool_event = _tool_event_data(event)
+                            if tool_event:
+                                event_type, data = tool_event
+                                yield _sse(event_type, **data)
+                            elif event["event"] == "on_chat_model_end":
+                                yield _sse("model_end", **_model_end_data(event))
 
-                        reply_part = _extract_final_reply(event)
-                        if reply_part:
-                            final_reply = reply_part
+                            reply_part = _extract_final_reply(event)
+                            if reply_part:
+                                final_reply = reply_part
             except Exception as exc:
                 logger.exception("声明式 Skill '%s' 流式执行失败", declarative.name)
                 yield _sse(
@@ -536,59 +521,24 @@ def _tool_preview(value: Any) -> str:
     return json.dumps(compact, ensure_ascii=False, default=str)
 
 
-def _extract_viewer_path(event: Mapping[str, Any]) -> str:
-    """从工具事件中提取 agentcad run 生成的 viewer 路径，供前端 iframe 展示。
-
-    两条来源：
-    1. bash 工具 on_tool_end：输出是 `{"success":..., "stdout":...}` 的 JSON，
-       其中 `stdout` 里才是 agentcad run 的 JSON（含 `viewer` 字段）。
-    2. complete_task 工具 on_tool_start：输入里的 detail 含 `VIEWER_PATH: xxx` 行。
-    """
-    data = event.get("data") or {}
-    event_name = event.get("event")
-
-    candidate = ""
-    if event_name == "on_tool_end":
-        candidate = data.get("output")
-    elif event_name == "on_tool_start":
-        candidate = data.get("input")
-    if candidate is None:
-        return ""
-
-    # on_tool_end 的 output 可能是 ToolMessage，取其 .content（才是 JSON 字符串）
+def _extract_artifact(event: Mapping[str, Any]) -> dict[str, Any] | None:
+    """从 publish_artifact 的结束事件提取公开元数据，不信任本地路径。"""
+    if event.get("event") != "on_tool_end" or event.get("name") != "publish_artifact":
+        return None
+    candidate = (event.get("data") or {}).get("output")
     if not isinstance(candidate, (str, dict)):
-        try:
-            candidate = candidate.content
-        except Exception:
-            pass
-    text = candidate if isinstance(candidate, str) else str(candidate)
-
-    # 第一层：外层 JSON（bash 包装 或 complete_task input JSON）
-    inner_text = text
+        candidate = getattr(candidate, "content", candidate)
     try:
-        outer = json.loads(text)
-        if isinstance(outer, dict):
-            if outer.get("viewer"):
-                return str(outer["viewer"])
-            inner_text = outer.get("stdout") or outer.get("detail") or outer.get("content") or inner_text
+        parsed = candidate if isinstance(candidate, dict) else json.loads(candidate)
     except (json.JSONDecodeError, TypeError):
-        if isinstance(candidate, dict):
-            inner_text = candidate.get("detail") or candidate.get("content") or str(candidate)
-
-    # 第二层：agentcad run 的 JSON
-    try:
-        inner = json.loads(inner_text)
-        if isinstance(inner, dict) and inner.get("viewer"):
-            return str(inner["viewer"])
-    except (json.JSONDecodeError, TypeError):
-        pass
-
-    # 兜底：找 VIEWER_PATH: xxx 行
-    for line in inner_text.splitlines():
-        line = line.strip()
-        if line.startswith("VIEWER_PATH:"):
-            return line.split(":", 1)[1].strip()
-    return ""
+        return None
+    if not isinstance(parsed, dict) or not parsed.get("success") or not parsed.get("artifact_id"):
+        return None
+    return {
+        key: parsed[key]
+        for key in ("artifact_id", "name", "media_type", "size_bytes")
+        if key in parsed
+    }
 
 
 def _extract_final_reply(event: Mapping[str, Any]) -> str:

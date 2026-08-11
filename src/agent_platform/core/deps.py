@@ -17,6 +17,7 @@ if TYPE_CHECKING:
     from agent_platform.memory.summarizer import ConversationSummarizer
     from agent_platform.memory.user_profile import UserProfileStore
     from agent_platform.prompts.builder import LayeredPromptBuilder
+    from agent_platform.runtime import ArtifactStore, SkillRuntimeManager
     from agent_platform.skills.registry import DeclarativeSkillRegistry
     from agent_platform.tools.budget import ToolBudgetManager
     from agent_platform.tools.rate_limiter import ToolRateLimiter
@@ -48,6 +49,8 @@ class PlatformDeps:
 
     # ── 声明式 Skills ──
     declarative_registry: DeclarativeSkillRegistry | None = None
+    runtime_manager: SkillRuntimeManager | None = None
+    artifact_store: ArtifactStore | None = None
 
     # ── HITL ──
     approval_store: ApprovalStore | None = None

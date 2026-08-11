@@ -15,12 +15,13 @@ from agent_platform.api.middleware import (
     ObservabilityMiddleware,
     RateLimitMiddleware,
 )
-from agent_platform.api.routes import audit, callback, chat, hitl, preferences, review, skills
+from agent_platform.api.routes import artifacts, audit, callback, chat, hitl, preferences, review, skills
 from agent_platform.config.settings import settings
 from agent_platform.core.deps import PlatformDeps
 from agent_platform.core.registry import SkillRegistry
 from agent_platform.memory import ConversationSummarizer, SessionStore, UserProfileStore
 from agent_platform.models.provider import ModelProvider
+from agent_platform.runtime import SkillRuntimeManager
 from agent_platform.skills.builder import resolve_skill_tools
 from agent_platform.skills.registry import DeclarativeSkillRegistry
 from agent_platform.tools import register_all_declarative_tools
@@ -60,10 +61,15 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     approval_store = ApprovalStore(approval_db)
 
     # ── 声明式 Skills 加载 ──
+    runtime_manager = SkillRuntimeManager(settings)
+    expired_artifacts = runtime_manager.artifact_store.cleanup_expired()
+    if expired_artifacts:
+        logger.info("已清理 %d 个过期或无效 Skill 产物", expired_artifacts)
     register_all_declarative_tools()
     registered_tools = tool_map()
 
     def validate_declarative_skill(declarative_skill) -> None:
+        runtime_manager.validate_profile(declarative_skill.runtime_profile)
         bound_tools = resolve_skill_tools(declarative_skill, registered_tools)
         logger.info(
             "声明式 Skill '%s' 工具绑定就绪: %s",
@@ -98,6 +104,8 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
             audit_store=audit_store,
             approval_store=approval_store,
             declarative_registry=declarative_registry,
+            runtime_manager=runtime_manager,
+            artifact_store=runtime_manager.artifact_store,
             kb_client=kb_client,
         )
         deps._callback_base = settings.callback_base_url
@@ -150,6 +158,7 @@ app.add_middleware(AuthMiddleware)
 # ── 路由 ──────────────────────────────────────────────────
 
 app.include_router(chat.router)
+app.include_router(artifacts.router)
 app.include_router(skills.router)
 app.include_router(audit.router)
 app.include_router(hitl.router)

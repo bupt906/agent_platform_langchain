@@ -6,6 +6,7 @@ import json
 
 import pytest
 
+from agent_platform.agents.document_review.knowledge_bases.client import KBHit, KnowledgeHitClient
 from agent_platform.agents.document_review.pipeline import (
     ReviewPipeline,
     _parse_llm_response,
@@ -18,8 +19,6 @@ from agent_platform.agents.document_review.tools import (
     split_sentences,
 )
 from agent_platform.config.settings import Settings
-from agent_platform.agents.document_review.knowledge_bases.client import KBHit, KnowledgeHitClient
-
 
 # ── Fixtures ──────────────────────────────────────────────
 

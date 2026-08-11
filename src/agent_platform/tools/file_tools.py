@@ -26,6 +26,7 @@ TEXT_SUFFIXES = {
     ".py",
     ".pyw",
 }
+WRITABLE_TEXT_SUFFIXES = TEXT_SUFFIXES - {".py", ".pyw"}
 SUPPORTED_ENCODINGS = ("utf-8", "utf-8-sig", "gb18030")
 
 
@@ -194,8 +195,8 @@ def write_file(
             settings.file_write_allowed_roots,
             "写入",
         )
-        if path.suffix.lower() not in TEXT_SUFFIXES:
-            supported = ", ".join(sorted(TEXT_SUFFIXES))
+        if path.suffix.lower() not in WRITABLE_TEXT_SUFFIXES:
+            supported = ", ".join(sorted(WRITABLE_TEXT_SUFFIXES))
             raise ValueError(f"不支持的文件类型 '{path.suffix}'。支持: {supported}")
         if path.exists():
             if not path.is_file():
@@ -272,8 +273,8 @@ def edit_file(
             raise FileNotFoundError(f"文件不存在: {file_path}")
         if not path.is_file():
             raise ValueError(f"路径不是文件: {file_path}")
-        if path.suffix.lower() not in TEXT_SUFFIXES:
-            supported = ", ".join(sorted(TEXT_SUFFIXES))
+        if path.suffix.lower() not in WRITABLE_TEXT_SUFFIXES:
+            supported = ", ".join(sorted(WRITABLE_TEXT_SUFFIXES))
             raise ValueError(f"不支持的文件类型 '{path.suffix}'。支持: {supported}")
 
         size = path.stat().st_size

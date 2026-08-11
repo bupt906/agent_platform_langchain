@@ -18,3 +18,4 @@ venv/
 *.db-shm
 *.db-wal
 .claude/
+.agent-platform/

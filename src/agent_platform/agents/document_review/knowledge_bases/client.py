@@ -1,7 +1,7 @@
 """外部知识库客户端。
 
 调用万悟平台知识库命中（hit）接口执行检索，替代原本地 sqlite-vec 向量检索。
-接口文档见 docs/知识库接口文档.md。
+连接参数由 Settings / .env 管理，接口约束以服务端 OpenAPI 和实现为准。
 """
 
 from __future__ import annotations

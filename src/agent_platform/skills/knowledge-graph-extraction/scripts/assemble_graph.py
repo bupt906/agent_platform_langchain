@@ -286,7 +286,7 @@ def merge_relationships(records, resolution, symmetric_types, alias_hints=None):
                 ed["evidence"] = rec["evidence"]
 
     out = []
-    for i, (key, ed) in enumerate(edges.items()):
+    for i, (_key, ed) in enumerate(edges.items()):
         out.append(OrderedDict([
             ("id", f"r{i+1}"),
             ("source", ed["source"]),
@@ -490,11 +490,20 @@ def main():
         json.dump(graph, f, ensure_ascii=False, indent=2)
     written = [args.out]
     if "graphml" in formats:
-        p = stem + ".graphml"; open(p, "w", encoding="utf-8").write(emit_graphml(graph)); written.append(p)
+        p = stem + ".graphml"
+        with open(p, "w", encoding="utf-8") as f:
+            f.write(emit_graphml(graph))
+        written.append(p)
     if "cypher" in formats:
-        p = stem + ".cypher"; open(p, "w", encoding="utf-8").write(emit_cypher(graph)); written.append(p)
+        p = stem + ".cypher"
+        with open(p, "w", encoding="utf-8") as f:
+            f.write(emit_cypher(graph))
+        written.append(p)
     if "ttl" in formats or "turtle" in formats:
-        p = stem + ".ttl"; open(p, "w", encoding="utf-8").write(emit_turtle(graph, args.base_iri)); written.append(p)
+        p = stem + ".ttl"
+        with open(p, "w", encoding="utf-8") as f:
+            f.write(emit_turtle(graph, args.base_iri))
+        written.append(p)
 
     if args.merge_report:
         report_written = list(written) + [args.merge_report]

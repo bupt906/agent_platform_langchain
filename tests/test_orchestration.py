@@ -15,7 +15,6 @@ from agent_platform.graph.events import (
 from agent_platform.graph.patterns import (
     ExecutionPlan,
     SubTask,
-    build_sequential_graph,
 )
 
 

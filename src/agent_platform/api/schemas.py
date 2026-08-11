@@ -50,6 +50,9 @@ class SkillInfoResponse(BaseModel):
     ready: bool = True
     missing_tools: list[str] = []
     unavailable_reason: str | None = None
+    runtime_profile: str | None = None
+    runtime_backend: str | None = None
+    runtime_reason: str | None = None
 
 
 class SkillListResponse(BaseModel):
