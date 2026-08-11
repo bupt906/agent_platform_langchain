@@ -86,7 +86,7 @@ tools: [read_file, write_file, bash]   # 声明需要的工具
 **关键点**：
 - `name`：英文，短横线分隔，用作 `skill` 参数值
 - `description`：一句英文描述，LLM 路由器根据这个判断用户意图是否匹配
-- `tools`：从全局工具池中选，填工具名即可。当前可用：`execute_python`、`bash`、`read_file`、`write_file`
+- `tools`：从全局工具池中选，填工具名即可。当前可用：`execute_python`、`bash`、`read_file`、`write_file`、`edit_file`
 - 正文：Agent关于这个SKILL该做的事
 
 ### ② assets/ — 示例和模板
@@ -143,7 +143,7 @@ Agent: "校验图的质量"       → bash("python scripts/validate_graph.py ...
 | 书写文件 | `execute_python`（python-docx） | ❌ → 需要新工具 |
 | 运行代码 | `execute_python` （部分）| ❌ → 需要新工具 |
 
-如果 `execute_python` + `bash` + `read_file` + `write_file` 够用，**零代码**，只写 SKILL.md。
+如果 `execute_python` + `bash` + `read_file` + `write_file` + `edit_file` 够用，**零代码**，只写 SKILL.md。
 
 如果不够，开发需要的 `@tool`工具，然后在 `tools/__init__.py` 的 `register_all_declarative_tools()` 里注册。构建工具的具体流程见 [五、工具](#五工具)。
 

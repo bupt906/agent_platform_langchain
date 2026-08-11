@@ -1,8 +1,14 @@
 from __future__ import annotations
 
+from types import SimpleNamespace
+
 import pytest
 
+from agent_platform.api.routes.skills import list_skills
 from agent_platform.core.registry import SkillRegistry
+from agent_platform.skills.registry import DeclarativeSkillRegistry
+
+
 class TestSkillRegistry:
     def test_auto_discover_finds_document_review(self, skill_registry: SkillRegistry):
         names = skill_registry.skill_names()
@@ -40,3 +46,28 @@ class TestSkillRegistry:
         skill = skill_registry.get("document_review")
         agent = skill.create_agent(model_provider, checkpointer=None)
         assert agent is not None
+
+
+@pytest.mark.asyncio
+async def test_skills_endpoint_lists_agents_and_declarative_skills(deps) -> None:
+    from agent_platform.tools import register_all_declarative_tools
+
+    register_all_declarative_tools()
+    deps.declarative_registry = DeclarativeSkillRegistry()
+    request = SimpleNamespace(
+        app=SimpleNamespace(state=SimpleNamespace(deps=deps)),
+    )
+
+    response = await list_skills(request)
+    items = {item.name: item for item in response.skills}
+
+    assert items["document_review"].kind == "agent"
+    assert items["knowledge-graph-extraction"].kind == "skill"
+    assert items["knowledge-graph-extraction"].tools == [
+        "read_file",
+        "write_file",
+        "edit_file",
+        "bash",
+    ]
+    assert items["knowledge-graph-extraction"].ready is True
+    assert items["knowledge-graph-extraction"].missing_tools == []

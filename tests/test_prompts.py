@@ -11,6 +11,7 @@ from agent_platform.prompts.templates import (
     ROUTER_RULES_STABLE,
     SYNTHESIS_DEFAULT,
 )
+from agent_platform.skills.registry import DeclarativeSkillRegistry
 
 
 class TestPromptTemplates:
@@ -59,10 +60,13 @@ class TestLayeredPromptBuilder:
         assert "路由规则" in prompt
 
     def test_build_volatile(self, builder):
-        result = builder.build_volatile("用户问题", history=[
-            {"role": "user", "content": "之前的问题"},
-            {"role": "assistant", "content": "之前的回答"},
-        ])
+        result = builder.build_volatile(
+            "用户问题",
+            history=[
+                {"role": "user", "content": "之前的问题"},
+                {"role": "assistant", "content": "之前的回答"},
+            ],
+        )
         assert "用户问题" in result
         assert "之前的问题" in result
 
@@ -88,3 +92,17 @@ class TestLayeredPromptBuilder:
         assert "智能路由器" in prompt
         assert "可用技能" in prompt
         assert "document_review" in prompt
+
+    def test_build_router_prompt_includes_declarative_skills(
+        self,
+        builder,
+        skill_registry,
+    ):
+        prompt = builder.build_router_prompt(
+            skill_registry,
+            DeclarativeSkillRegistry(),
+        )
+
+        assert "knowledge-graph-extraction" in prompt
+        assert "声明式 Skill" in prompt
+        assert "read_file" in prompt

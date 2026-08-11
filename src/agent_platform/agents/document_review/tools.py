@@ -193,4 +193,3 @@ def format_kb_results_for_prompt(results: list[dict]) -> str:
         )
 
     return "\n\n".join(parts)
-

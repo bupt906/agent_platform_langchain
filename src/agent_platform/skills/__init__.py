@@ -1,4 +1,7 @@
-from agent_platform.skills.builder import build_skill_agent, extract_complete_result
+from agent_platform.skills.builder import (
+    build_skill_agent,
+    extract_complete_result,
+)
 from agent_platform.skills.complete import all_complete_tools, get_complete_tool
 from agent_platform.skills.registry import DeclarativeSkill, DeclarativeSkillRegistry
 

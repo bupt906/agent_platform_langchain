@@ -14,9 +14,7 @@ from agent_platform.models.provider import ModelProvider
 def settings() -> Settings:
     """返回测试用配置，使用 mock key 避免意外触发网络请求。"""
     s = Settings(
-        default_model="deepseek:deepseek-chat",
-        deepseek_api_key="test-key",
-        openai_api_key="test-key",
+        default_model="deepseek:deepseek-v4-pro",
     )
     # 用 mock key 覆盖 ModelConfig 的默认 env 读取
     s.models.deepseek_api_key = "test-key"

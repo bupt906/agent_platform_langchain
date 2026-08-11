@@ -3,7 +3,8 @@
 validate_graph.py — Structural validation of a knowledge graph. Catches the
 mechanical defects that undermine logical integrity: dangling edges, duplicate
 nodes/edges, self-loops, orphan nodes, unknown types, and schema-incompatible
-edge endpoints.
+edge endpoints. Event-aware schemas also validate event-role direction,
+event-to-event endpoint types, and required event roles.
 
 This complements (does not replace) the agent-level review in
 references/validation.md. Run both.
@@ -151,15 +152,27 @@ def load_schema(graph, schema_path):
 
 
 def build_type_rules(schema):
-    entity_types = {et.get("type") for et in schema.get("entity_types", [])}
+    entity_rules = {}
+    for et in schema.get("entity_types", []):
+        etype = et.get("type")
+        if not etype:
+            continue
+        entity_rules[etype] = {
+            "kind": et.get("kind", "entity"),
+            "required_roles": set(et.get("required_roles") or []),
+        }
     rel_rules = {}
     for rt in schema.get("relationship_types", []):
-        rel_rules[rt.get("type")] = {
+        rtype = rt.get("type")
+        if not rtype:
+            continue
+        rel_rules[rtype] = {
             "source_types": set(rt.get("source_types") or []),
             "target_types": set(rt.get("target_types") or []),
             "symmetric": bool(rt.get("symmetric")),
+            "relation_kind": rt.get("relation_kind", "entity_relation"),
         }
-    return entity_types, rel_rules
+    return entity_rules, rel_rules
 
 
 def validate(graph, schema, lang_hint="auto"):
@@ -179,8 +192,73 @@ def validate(graph, schema, lang_hint="auto"):
             errors.append({"kind": "duplicate_entity_id", "detail": eid})
         by_id[eid] = e
 
-    entity_types, rel_rules = build_type_rules(schema)
-    have_schema = bool(entity_types or rel_rules)
+    entity_rules, rel_rules = build_type_rules(schema)
+    entity_types = set(entity_rules)
+    event_types = {etype for etype, rule in entity_rules.items()
+                   if rule["kind"] == "event"}
+    have_schema = bool(entity_rules or rel_rules)
+
+    # Validate optional event-aware schema annotations. Existing schemas that do
+    # not use kind/relation_kind remain backward compatible.
+    for etype, rule in entity_rules.items():
+        if rule["kind"] not in {"entity", "event"}:
+            errors.append({
+                "kind": "invalid_event_schema",
+                "detail": (f"entity type '{etype}' has unknown kind "
+                           f"'{rule['kind']}'")})
+        if rule["required_roles"] and rule["kind"] != "event":
+            errors.append({
+                "kind": "invalid_event_schema",
+                "detail": (f"entity type '{etype}' declares required_roles but "
+                           "is not kind 'event'")})
+        for role in sorted(rule["required_roles"]):
+            role_rule = rel_rules.get(role)
+            if not role_rule:
+                errors.append({
+                    "kind": "invalid_event_schema",
+                    "detail": (f"event type '{etype}' requires unknown role "
+                               f"'{role}'")})
+            elif role_rule["relation_kind"] != "event_role":
+                errors.append({
+                    "kind": "invalid_event_schema",
+                    "detail": (f"event type '{etype}' requires '{role}', but it "
+                               "is not relation_kind 'event_role'")})
+            elif etype not in role_rule["source_types"]:
+                errors.append({
+                    "kind": "invalid_event_schema",
+                    "detail": (f"event type '{etype}' requires '{role}', but "
+                               "that role does not allow the event type as a "
+                               "source")})
+
+    valid_relation_kinds = {"entity_relation", "event_role", "event_relation"}
+    for rtype, rule in rel_rules.items():
+        relation_kind = rule["relation_kind"]
+        if relation_kind not in valid_relation_kinds:
+            errors.append({
+                "kind": "invalid_event_schema",
+                "detail": (f"relationship type '{rtype}' has unknown "
+                           f"relation_kind '{relation_kind}'")})
+        if relation_kind == "event_role":
+            if not rule["source_types"]:
+                errors.append({
+                    "kind": "invalid_event_schema",
+                    "detail": (f"event role '{rtype}' must declare event "
+                               "source_types")})
+            elif not rule["source_types"].issubset(event_types):
+                invalid = sorted(rule["source_types"] - event_types)
+                errors.append({
+                    "kind": "invalid_event_schema",
+                    "detail": (f"event role '{rtype}' has non-event source "
+                               f"types {invalid}")})
+        if relation_kind == "event_relation":
+            invalid_sources = rule["source_types"] - event_types
+            invalid_targets = rule["target_types"] - event_types
+            if not rule["source_types"] or not rule["target_types"] \
+                    or invalid_sources or invalid_targets:
+                errors.append({
+                    "kind": "invalid_event_schema",
+                    "detail": (f"event relation '{rtype}' must connect only "
+                               "declared event types")})
 
     # duplicate entities by normalized name + type
     seen = defaultdict(list)
@@ -201,6 +279,7 @@ def validate(graph, schema, lang_hint="auto"):
     # edges
     edge_seen = Counter()
     referenced = set()
+    outgoing_event_roles = defaultdict(set)
     for r in rels:
         s, t, rt = r.get("source"), r.get("target"), r.get("type")
         rid = r.get("id", "?")
@@ -241,6 +320,9 @@ def validate(graph, schema, lang_hint="auto"):
                                    "detail": (f"{rid}: '{rt}' target is "
                                               f"{te.get('type')}, allowed "
                                               f"{sorted(rule['target_types'])}")})
+                if se and rule["relation_kind"] == "event_role" \
+                        and se.get("type") in event_types:
+                    outgoing_event_roles[s].add(rt)
 
     for key, c in edge_seen.items():
         if c > 1:
@@ -251,6 +333,16 @@ def validate(graph, schema, lang_hint="auto"):
         if e.get("id") not in referenced:
             warnings.append({"kind": "orphan_node",
                              "detail": f"{e.get('id')} ('{e.get('name')}') has no edges"})
+
+        rule = entity_rules.get(e.get("type"), {})
+        required_roles = rule.get("required_roles", set())
+        if rule.get("kind") == "event" and required_roles:
+            missing = sorted(required_roles - outgoing_event_roles[e.get("id")])
+            if missing:
+                warnings.append({
+                    "kind": "incomplete_event_roles",
+                    "detail": (f"{e.get('id')} ('{e.get('name')}') is missing "
+                               f"required event roles {missing}")})
 
     # language consistency (descriptions + schema/type vocabulary vs. graph language)
     lang_warnings, lang_info = language_check(graph, schema, lang_hint)

@@ -21,17 +21,17 @@ from agent_platform.core.deps import PlatformDeps
 from agent_platform.core.registry import SkillRegistry
 from agent_platform.memory import ConversationSummarizer, SessionStore, UserProfileStore
 from agent_platform.models.provider import ModelProvider
+from agent_platform.skills.builder import resolve_skill_tools
 from agent_platform.skills.registry import DeclarativeSkillRegistry
 from agent_platform.tools import register_all_declarative_tools
+from agent_platform.tools.registry import tool_map
 
 logger = logging.getLogger(__name__)
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI) -> AsyncIterator[None]:
-    logging.basicConfig(
-        level=getattr(logging, settings.log_level.upper(), logging.INFO)
-    )
+    logging.basicConfig(level=getattr(logging, settings.log_level.upper(), logging.INFO))
 
     model_provider = ModelProvider(settings)
     skill_registry = SkillRegistry()
@@ -61,7 +61,23 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
 
     # ── 声明式 Skills 加载 ──
     register_all_declarative_tools()
-    declarative_registry = DeclarativeSkillRegistry()
+    registered_tools = tool_map()
+
+    def validate_declarative_skill(declarative_skill) -> None:
+        bound_tools = resolve_skill_tools(declarative_skill, registered_tools)
+        logger.info(
+            "声明式 Skill '%s' 工具绑定就绪: %s",
+            declarative_skill.name,
+            ", ".join(tool.name for tool in bound_tools) or "无",
+        )
+
+    declarative_registry = DeclarativeSkillRegistry(validator=validate_declarative_skill)
+    if declarative_registry.unavailable_skills:
+        logger.warning(
+            "已隔离 %d 个配置无效的声明式 Skill: %s",
+            len(declarative_registry.unavailable_skills),
+            ", ".join(declarative_registry.unavailable_skills),
+        )
     logger.info("声明式 Skills 加载完成，共 %d 个", declarative_registry.count)
 
     async with httpx.AsyncClient(proxy=None) as http_client:

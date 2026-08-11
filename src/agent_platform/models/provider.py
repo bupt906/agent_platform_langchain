@@ -10,9 +10,17 @@ from agent_platform.config.settings import Settings
 
 logger = logging.getLogger(__name__)
 
+SUPPORTED_MODEL_PROVIDERS = ("deepseek", "qwen", "ollama", "openai")
+PROVIDER_DISPLAY_NAMES = {
+    "deepseek": "DeepSeek",
+    "qwen": "通义千问",
+    "ollama": "Ollama",
+    "openai": "OpenAI",
+}
+
 
 class ModelProvider:
-    """统一的多模型路由，支持 DeepSeek / Qwen / Ollama / OpenAI 等 OpenAI 兼容接口。"""
+    """统一的多模型路由，支持 DeepSeek / Qwen / Ollama / OpenAI。"""
 
     def __init__(self, settings: Settings, _cache: dict | None = None, _thinking: bool = False) -> None:
         self._settings = settings
@@ -49,6 +57,46 @@ class ModelProvider:
             )
         return self._cache[cache_key]
 
+    def describe_model(self, model_id: str | None = None) -> dict[str, str]:
+        """解析模型 ID，返回不含密钥的权威连接信息。"""
+        resolved_id = model_id or self._settings.default_model
+        if ":" not in resolved_id:
+            raise ValueError(
+                f"模型 ID '{resolved_id}' 缺少 provider 前缀；请使用 provider:model 格式，例如 deepseek:deepseek-v4-pro"
+            )
+
+        provider, model_name = resolved_id.split(":", 1)
+        if provider not in SUPPORTED_MODEL_PROVIDERS:
+            supported = ", ".join(SUPPORTED_MODEL_PROVIDERS)
+            raise ValueError(f"不支持的模型 provider '{provider}'；可用值: {supported}")
+        if not model_name:
+            raise ValueError(f"模型 ID '{resolved_id}' 缺少模型名称")
+
+        cfg = self._settings.models
+        base_urls = {
+            "deepseek": cfg.deepseek_base_url,
+            "qwen": cfg.qwen_base_url,
+            "ollama": cfg.ollama_base_url,
+            "openai": cfg.openai_base_url,
+        }
+        return {
+            "model_id": resolved_id,
+            "provider": provider,
+            "provider_name": PROVIDER_DISPLAY_NAMES[provider],
+            "model_name": model_name,
+            "base_url": base_urls[provider],
+            "api_mode": "openai-chat-completions",
+        }
+
+    def model_identity_instruction(self, model_id: str | None = None) -> str:
+        """生成供系统提示词使用的模型身份说明，避免模型自行猜测。"""
+        info = self.describe_model(model_id)
+        identity = f"本次请求的运行时模型是 {info['provider_name']} 提供的 {info['model_name']}。"
+        return (
+            f"{identity} 如果用户询问模型身份，必须依据此运行时信息回答，"
+            "不要根据训练语料、客户端名称或兼容协议猜测其他供应商。"
+        )
+
     def _build_model(
         self,
         model_id: str,
@@ -60,10 +108,9 @@ class ModelProvider:
             "max_retries": self.max_retries,
         }
 
-        if ":" not in model_id:
-            return ChatOpenAI(model=model_id, **opts)
-
-        provider, model_name = model_id.split(":", 1)
+        info = self.describe_model(model_id)
+        provider = info["provider"]
+        model_name = info["model_name"]
         cfg = self._settings.models
 
         if provider == "deepseek":
@@ -103,11 +150,10 @@ class ModelProvider:
                 base_url=cfg.openai_base_url,
                 **opts,
             )
-        return ChatOpenAI(model=model_name, **opts)
+        raise AssertionError(f"未处理的模型 provider: {provider}")
 
     def get_fallback_model(self, model_ids: list[str] | None = None) -> BaseChatModel:
         """返回带 fallback 链的模型：主模型不可用时自动切换至备用模型。"""
         model_ids = model_ids or [self._settings.default_model, "openai:gpt-4o"]
         models = [self.get_model(mid) for mid in model_ids]
         return models[0].with_fallbacks(models[1:])
-

@@ -17,6 +17,7 @@ from agent_platform.prompts.templates import ROUTER_RULES_STABLE
 
 if TYPE_CHECKING:
     from agent_platform.core.registry import SkillRegistry
+    from agent_platform.skills.registry import DeclarativeSkillRegistry
 
 logger = logging.getLogger(__name__)
 
@@ -26,8 +27,8 @@ class LayeredPromptBuilder:
 
     def __init__(self, cache_ttl: int = 300) -> None:
         self._cache_ttl = cache_ttl
-        self._context_cache: dict[int, str] = {}
-        self._context_cache_ts: dict[int, float] = {}
+        self._context_cache: dict[tuple[int, int], str] = {}
+        self._context_cache_ts: dict[tuple[int, int], float] = {}
 
     # ── 稳定层 ──────────────────────────────────────────────
 
@@ -41,17 +42,21 @@ class LayeredPromptBuilder:
 
     # ── 上下文层 ────────────────────────────────────────────
 
-    def get_context_layer(self, registry: SkillRegistry) -> str:
-        """构建上下文层：所有已注册技能的描述。
+    def get_context_layer(
+        self,
+        registry: SkillRegistry,
+        declarative_registry: DeclarativeSkillRegistry | None = None,
+    ) -> str:
+        """构建上下文层：所有 Python Agent 和声明式 Skill 的描述。
 
         结果按 registry 对象 id 缓存，TTL 后失效，确保技能变更后自动刷新。
         """
-        reg_id = id(registry)
+        cache_key = (id(registry), id(declarative_registry))
         now = time.monotonic()
 
-        if reg_id in self._context_cache:
-            if now - self._context_cache_ts.get(reg_id, 0) < self._cache_ttl:
-                return self._context_cache[reg_id]
+        if cache_key in self._context_cache:
+            if now - self._context_cache_ts.get(cache_key, 0) < self._cache_ttl:
+                return self._context_cache[cache_key]
 
         skills = registry.list_skills()
         skill_descriptions = []
@@ -59,13 +64,19 @@ class LayeredPromptBuilder:
             dep_info = f"  依赖技能: {', '.join(s.dependencies)}" if s.dependencies else ""
             examples = "\n".join(f"    - {e}" for e in s.examples)
             skill_descriptions.append(
-                f"- **{s.name}**: {s.description}\n  示例问题:\n{examples}\n{dep_info}"
+                f"- **{s.name}**（Python Agent）: {s.description}\n  示例问题:\n{examples}\n{dep_info}"
             )
+        if declarative_registry:
+            for skill in declarative_registry.list_skills():
+                tools = ", ".join(skill.tools) if skill.tools else "无"
+                skill_descriptions.append(
+                    f"- **{skill.name}**（声明式 Skill）: {skill.description}\n  可用工具: {tools}"
+                )
         skills_text = "\n".join(skill_descriptions)
 
         result = f"## 可用技能\n{skills_text}"
-        self._context_cache[reg_id] = result
-        self._context_cache_ts[reg_id] = now
+        self._context_cache[cache_key] = result
+        self._context_cache_ts[cache_key] = now
         return result
 
     # ── 易变层 ──────────────────────────────────────────────
@@ -84,10 +95,14 @@ class LayeredPromptBuilder:
 
     # ── 组装 ────────────────────────────────────────────────
 
-    def build_router_prompt(self, registry: SkillRegistry) -> str:
+    def build_router_prompt(
+        self,
+        registry: SkillRegistry,
+        declarative_registry: DeclarativeSkillRegistry | None = None,
+    ) -> str:
         """组装路由器的完整 system prompt。"""
         stable = self.get_router_stable()
-        context = self.get_context_layer(registry)
+        context = self.get_context_layer(registry, declarative_registry)
         return f"{stable}\n\n{context}"
 
     def build_skill_prompt(self, skill_name: str, query: str, registry: SkillRegistry | None = None) -> str:

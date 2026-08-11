@@ -69,7 +69,10 @@ def _extract_tokens(result: dict | None) -> dict[str, int]:
 def _build_router_prompt(deps: PlatformDeps) -> str:
     # 优先使用分层 builder，回退到原有拼接逻辑
     if deps.prompt_builder:
-        return deps.prompt_builder.build_router_prompt(deps.skill_registry)
+        return deps.prompt_builder.build_router_prompt(
+            deps.skill_registry,
+            deps.declarative_registry,
+        )
 
     skills = deps.skill_registry.list_skills()
     skill_descriptions = []
@@ -77,9 +80,12 @@ def _build_router_prompt(deps: PlatformDeps) -> str:
         dep_info = f"  依赖技能: {', '.join(s.dependencies)}" if s.dependencies else ""
         examples = "\n".join(f"    - {e}" for e in s.examples)
         skill_descriptions.append(
-            f"- **{s.name}**: {s.description}\n"
-            f"  示例问题:\n{examples}\n{dep_info}"
+            f"- **{s.name}**（Python Agent）: {s.description}\n  示例问题:\n{examples}\n{dep_info}"
         )
+    if deps.declarative_registry:
+        for skill in deps.declarative_registry.list_skills():
+            tools = ", ".join(skill.tools) if skill.tools else "无"
+            skill_descriptions.append(f"- **{skill.name}**（声明式 Skill）: {skill.description}\n  可用工具: {tools}")
     skills_text = "\n".join(skill_descriptions)
 
     return f"""\
@@ -139,6 +145,7 @@ async def execute_decision(
     reply = ""
     error = None
     tokens = {"prompt": 0, "completion": 0, "total": 0}
+    declarative_selected = False
 
     try:
         if decision.mode == "multi" and decision.execution_plan:
@@ -161,14 +168,29 @@ async def execute_decision(
                 # 检查声明式 Skill 匹配
                 declarative = deps.declarative_registry.get(decision.skill_name) if deps.declarative_registry else None
                 if declarative and deps.declarative_registry:
-                    reply, tokens = await _execute_declarative_skill(
-                        declarative, message, deps, model_id, invoke_cfg
-                    )
+                    declarative_selected = True
+                    reply, tokens = await _execute_declarative_skill(declarative, message, deps, model_id, invoke_cfg)
                     decision.skill_name = f"skill:{declarative.name}"
+                elif decision.skill_name == "general":
+                    reply, tokens = await _general_response(message, deps, model_id, invoke_cfg)
                 else:
-                    reply, tokens = await _general_response(
-                        message, deps, model_id, invoke_cfg
-                    )
+                    logger.warning("自动路由选择了未注册的 Skill '%s'，降级为通用对话", decision.skill_name)
+                    decision.skill_name = "general"
+                    reply, tokens = await _general_response(message, deps, model_id, invoke_cfg)
+    except RuntimeError as e:
+        error = str(e)
+        if declarative_selected:
+            logger.warning("声明式 Skill 执行失败，降级为通用对话: %s", error, exc_info=True)
+            decision.skill_name = "general"
+            try:
+                reply, tokens = await _general_response(message, deps, model_id, invoke_cfg)
+            except Exception as fallback_error:
+                error = f"{error}; 通用对话降级失败: {fallback_error}"
+                logger.error("通用对话降级失败: %s", fallback_error, exc_info=True)
+                reply = f"抱歉，处理请求时出现错误: {error}"
+        else:
+            logger.error("决策执行失败: %s", error, exc_info=True)
+            reply = f"抱歉，处理请求时出现错误: {error}"
     except Exception as e:
         error = str(e)
         logger.error("决策执行失败: %s", error, exc_info=True)
@@ -196,7 +218,9 @@ async def execute_decision(
             await deps.audit_store.record(
                 AuditRecord(
                     session_id=session_id,
-                    agent_type=f"skill:{decision.skill_name}" if decision.skill_name not in ("general", "multi_agent") else decision.skill_name,
+                    agent_type=f"skill:{decision.skill_name}"
+                    if decision.skill_name not in ("general", "multi_agent")
+                    else decision.skill_name,
                     user_message=message,
                     assistant_message=reply,
                     tokens_prompt=tokens["prompt"],
@@ -242,9 +266,7 @@ async def execute_skill_direct(
     # 命中声明式 Skill：走动态构建路径
     if declarative:
         try:
-            reply, tokens = await _execute_declarative_skill(
-                declarative, message, deps, model_id, invoke_cfg
-            )
+            reply, tokens = await _execute_declarative_skill(declarative, message, deps, model_id, invoke_cfg)
             skill_name = f"skill:{declarative.name}"
         except Exception as e:
             error = str(e)
@@ -326,24 +348,28 @@ async def _execute_declarative_skill(
         build_skill_agent,
         extract_complete_result,
         recursion_limit_for_tool_calls,
+        resolve_skill_tools,
     )
     from agent_platform.tools.registry import tool_map
 
     model = deps.model_provider.get_model(model_id)
     from agent_platform.config.settings import settings as _settings
+
     max_calls = _settings.declarative_skills_max_tool_calls
 
-    tools = []
-    for tool_name in skill.tools:
-        t = tool_map().get(tool_name)
-        if t:
-            tools.append(t)
-        else:
-            logger.warning("Skill '%s' 声明了工具 '%s'，但工具未注册", skill.name, tool_name)
+    registered_tools = tool_map()
+    tools = resolve_skill_tools(skill, registered_tools)
 
     session_id = invoke_cfg.get("configurable", {}).get("thread_id", "") if invoke_cfg else ""
 
-    agent = build_skill_agent(model, skill, tools, max_tool_calls=max_calls, session_id=session_id)
+    agent = build_skill_agent(
+        model,
+        skill,
+        tools,
+        max_tool_calls=max_calls,
+        session_id=session_id,
+        model_identity=deps.model_provider.model_identity_instruction(model_id),
+    )
 
     skill_invoke_cfg = {
         **(invoke_cfg or {}),
@@ -369,34 +395,15 @@ async def _general_response(
 ) -> tuple[str, dict]:
     """通用对话回复。"""
     model = deps.model_provider.get_model(model_id)
+    identity = deps.model_provider.model_identity_instruction(model_id)
     result = await model.ainvoke(
         [
-            SystemMessage(content="你是一个通用智能助手，尽力回答用户的问题。"),
+            SystemMessage(content=f"你是一个通用智能助手，尽力回答用户的问题。\n\n{identity}"),
             HumanMessage(content=message),
         ],
         config=invoke_cfg or {},
     )
     return result.content, _extract_tokens_from_message(result)
-
-
-async def _execute_declarative_skill_direct(
-    skill_name: str, message: str, deps: PlatformDeps,
-    *, model_id: str | None = None, session_id: str | None = None,
-) -> str:
-    """跳过路由，直接执行声明式 Skill。"""
-    if not deps.declarative_registry:
-        return "声明式 Skill 系统未启用"
-
-    skill = deps.declarative_registry.get(skill_name)
-    if not skill:
-        available = [s.name for s in (deps.declarative_registry.list_skills() or [])]
-        return f"未找到声明式 Skill: {skill_name}。可用: {', '.join(available)}"
-
-    invoke_cfg = _build_invoke_config(session_id)
-    reply, _ = await _execute_declarative_skill(
-        skill, message, deps, model_id, invoke_cfg
-    )
-    return reply
 
 
 # ── 向后兼容 ──────────────────────────────────────────────────

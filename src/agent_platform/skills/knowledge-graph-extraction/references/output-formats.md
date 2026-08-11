@@ -4,6 +4,15 @@ The canonical artifact is `graph.json`. Everything else (`graph.graphml`,
 `graph.cypher`, `graph.ttl`) is generated from it by `scripts/assemble_graph.py`,
 so you only ever hand-author the JSON; never hand-write GraphML or Turtle.
 
+## Contents
+
+- Canonical graph
+- Event-centered representation
+- Chunk workflow and schema-lineage artifacts
+- Merge report
+- Interchange formats
+- Naming and constraints
+
 ## Canonical `graph.json`
 
 ```json
@@ -54,6 +63,31 @@ Key points:
 During extraction you write the lighter per-chunk files (entities referenced by
 name in relationships); the assembler is what produces this final id-based form.
 
+## Event-centered representation
+
+Do not add a separate top-level `events` array or hyperedge format. Keep
+`graph.json` backward compatible:
+
+- an event occurrence is an ordinary entity whose schema type has `kind: event`;
+- event participants and qualifiers are ordinary relationships whose schema type
+  has `relation_kind: event_role`;
+- causal and temporal event-to-event edges use
+  `relation_kind: event_relation`;
+- stable entity-to-entity facts may use `relation_kind: entity_relation` or omit
+  the field for backward compatibility.
+
+An event entity type may declare `required_roles`, a list of relationship type
+names used by validation to detect incomplete event instances. Event-role edges
+always point from the event entity to its argument. Keep trigger wording,
+actuality/status, and identity dimensions in the grounded event description;
+represent time, place, participant, cause, result, amount, and instrument as role
+edges when the schema and source support them.
+
+Do not persist a direct binary projection of an event already represented by
+roles. For example, an acquisition event with `acquirer` and `acquired_company`
+roles is the canonical fact; a direct organization-to-organization `acquired`
+edge is derivable and should not be duplicated in `graph.json`.
+
 ## Chunk workflow artifacts
 
 The final `graph.json` stays backward compatible. The chunk-first workflow adds
@@ -61,9 +95,17 @@ intermediate JSON files that make long-document extraction auditable:
 
 - `kg_output/chunk_manifest.json` lists chunks in processing order and gives
   expected artifact paths for each chunk.
-- `kg_output/schema.json` is the current schema after approved chunk deltas.
+- `kg_output/schema_seed.json` is the immutable revision-0 schema. Inferred seed
+  types cite only allowed seed chunks; supplied ontologies are marked as such.
+- `kg_output/schema.json` is the current schema after approved chunk deltas. It
+  must never contain a type absent from both the seed and processed deltas.
+- `kg_output/schema_history.json` records, in manifest order, each chunk's
+  before/after revision, decision, additions/remaps, evidence, and affected
+  chunks.
 - `kg_output/entity_index.json` tracks canonical entities seen so far, aliases,
-  types, source chunks, descriptions, and open questions.
+  types, source chunks, descriptions, and open questions. Event entries also
+  carry an `event_signature` with available participants/roles, time, place,
+  trigger, sequence, and status for cross-chunk fusion.
 - `kg_output/aliases.json` maps surface forms to canonical names for
   `assemble_graph.py --aliases`.
 - `kg_output/unresolved_mentions.json` records ambiguous pronouns, acronyms,
@@ -87,12 +129,30 @@ kg_output/chunks/<chunk_id>.review.json
 These files are not downstream graph formats; they are the audit trail and the
 working state that lets cross-chunk fusion be corrected.
 
+### Manifest status contract
+
+Advance each chunk through these values in order:
+
+`pending → schema_checked → delta_applied → entities_extracted →
+relationships_extracted → locally_reviewed → complete`
+
+Do not skip a state. Do not open the next chunk before the current chunk is
+`complete`.
+
+### Schema delta contract
+
+Every `.schema_delta.json`, including a no-change delta, contains `chunk_id`,
+`schema_revision_before`, `decision`, `fit_check`, all addition/remap arrays, and
+`affected_chunks`. Additions/remaps carry exact current-chunk evidence. A
+no-change delta contains explicit mappings for important kinds and predicates;
+empty arrays without a fit explanation are not an audit artifact.
+
 ## Merge report
 
 When assembling, pass:
 
 ```bash
-python src/agent_platform/skills/knowledge-graph-extraction/scripts/assemble_graph.py kg_output/chunks/ --schema kg_output/schema.json --aliases kg_output/aliases.json --out kg_output/graph.json --merge-report kg_output/merge_report.json
+python scripts/assemble_graph.py kg_output/chunks/ --schema kg_output/schema.json --aliases kg_output/aliases.json --out kg_output/graph.json --merge-report kg_output/merge_report.json
 ```
 
 `merge_report.json` contains:

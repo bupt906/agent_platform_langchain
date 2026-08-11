@@ -22,7 +22,7 @@ class ModelConfig(BaseSettings):
 
 
 class Settings(BaseSettings):
-    default_model: str = "deepseek:deepseek-chat"
+    default_model: str = "deepseek:deepseek-v4-pro"
     mcp_config_path: Path = Path("mcp_config.json")
     log_level: str = "INFO"
     api_host: str = "0.0.0.0"

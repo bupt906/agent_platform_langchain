@@ -43,6 +43,10 @@ class SkillInfoResponse(BaseModel):
     description: str
     examples: list[str]
     dependencies: list[str] = []
+    kind: str = "agent"
+    tools: list[str] = []
+    ready: bool = True
+    missing_tools: list[str] = []
 
 
 class SkillListResponse(BaseModel):
