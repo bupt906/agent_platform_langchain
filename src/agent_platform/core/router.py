@@ -368,6 +368,37 @@ def _build_invoke_config(session_id: str | None) -> dict:
     return {"configurable": {"thread_id": uuid4().hex}}
 
 
+async def _load_session_messages(
+    deps: PlatformDeps, session_id: str, max_turns: int = 10
+) -> list:
+    """加载最近 max_turns 轮会话历史，转换为 LangChain 消息列表（正序，不含本轮）。
+
+    让声明式 Skill 也能感知多轮上下文，否则每次执行都只有当前一条
+    消息，模型完全不知道之前的设计过程。
+    """
+    from langchain_core.messages import AIMessage, HumanMessage
+
+    if not session_id or not deps.session_store:
+        return []
+    try:
+        # get_session_history 按条返回，一轮含 user + assistant 两条，
+        # 这里 limit 传入轮数 * 2 以取到完整的最近 max_turns 轮。
+        history = await deps.session_store.get_session_history(
+            session_id, limit=max_turns * 2
+        )
+    except Exception:
+        return []
+    messages: list = []
+    for turn in history:
+        user = turn.get("user_message")
+        assistant = turn.get("assistant_message")
+        if user:
+            messages.append(HumanMessage(content=user))
+        if assistant:
+            messages.append(AIMessage(content=assistant))
+    return messages
+
+
 async def _execute_declarative_skill(
     skill, message: str, deps: PlatformDeps, model_id: str | None, invoke_cfg: dict
 ) -> tuple[str, dict]:
@@ -399,12 +430,16 @@ async def _execute_declarative_skill(
         model_identity=deps.model_provider.model_identity_instruction(model_id),
     )
 
+    # 加载会话历史，让 skill 感知多轮上下文
+    history_messages = await _load_session_messages(deps, session_id)
+    input_messages = [*history_messages, HumanMessage(content=message)]
+
     skill_invoke_cfg = {
         **(invoke_cfg or {}),
         "recursion_limit": recursion_limit_for_tool_calls(max_calls),
     }
     result = await agent.ainvoke(
-        {"messages": [HumanMessage(content=message)]},
+        {"messages": input_messages},
         config=skill_invoke_cfg,
     )
 
