@@ -58,7 +58,7 @@ _REVIEW_SYSTEM_PROMPT = """\
 class ReviewPipeline:
     """文档审阅流水线。
 
-    知识库检索通过外部万悟平台 hit 接口完成（deps.kb_client），
+    知识库检索走平台统一的 KnowledgeProvider 接口（deps.knowledge），
     检索失败（重试后）该句标记 error 并继续，不中断整个任务。
     每批 5 句并发审阅，实际并发数由 asyncio.Semaphore(max_concurrency) 控制。
     """
@@ -160,14 +160,14 @@ class ReviewPipeline:
         self, index: int, sentence: str, kb_ids: list[str], task_id: int,
     ) -> dict:
         """审查单个句子。"""
-        # 1. 检索外部知识库（client 内部已重试，仍失败则标记 error 继续）
-        kb_client = self._deps.kb_client if self._deps else None
-        if not kb_client:
-            logger.warning("kb_client 未初始化，句子 [%d] 跳过审阅", index)
+        # 1. 检索知识库（provider 内部已重试，仍失败则标记 error 继续）
+        knowledge = self._deps.knowledge if self._deps else None
+        if not knowledge:
+            logger.warning("知识库后端未初始化，句子 [%d] 跳过审阅", index)
             return {"task_id": task_id, "sentence_index": index, "reviewed_sentence": sentence, "has_issue": "否", "content": {}, "error": True}
 
         try:
-            kb_results = await search_knowledge_bases(kb_ids, sentence, kb_client)
+            kb_results = await search_knowledge_bases(kb_ids, sentence, knowledge)
         except Exception as e:
             logger.warning("知识库检索失败 [%d]: %s", index, e)
             return {"task_id": task_id, "sentence_index": index, "reviewed_sentence": sentence, "has_issue": "否", "content": {}, "error": True}

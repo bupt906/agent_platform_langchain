@@ -1,4 +1,7 @@
-"""AI 文档审阅模块测试 — 外部知识库（万悟 hit 接口）版。"""
+"""AI 文档审阅模块测试。
+
+知识库检索走 KnowledgeProvider 接口，这里用万悟后端覆盖既有行为。
+"""
 
 from __future__ import annotations
 
@@ -6,7 +9,6 @@ import json
 
 import pytest
 
-from agent_platform.agents.document_review.knowledge_bases.client import KBHit, KnowledgeHitClient
 from agent_platform.agents.document_review.pipeline import (
     ReviewPipeline,
     _parse_llm_response,
@@ -18,7 +20,10 @@ from agent_platform.agents.document_review.tools import (
     search_knowledge_bases,
     split_sentences,
 )
-from agent_platform.config.settings import Settings
+from agent_platform.config.settings import WanwuKnowledgeConfig
+from agent_platform.knowledge.models import KBHit, KBSearchResult
+from agent_platform.knowledge.provider import KnowledgeConfigError, KnowledgeUnavailable
+from agent_platform.knowledge.providers.wanwu import WanwuProvider
 
 # ── Fixtures ──────────────────────────────────────────────
 
@@ -85,19 +90,30 @@ def make_hit_response(hits: list[tuple[str, str, str, float]]) -> dict:
     }
 
 
-class FakeKBClient:
-    """模拟 KnowledgeHitClient。"""
+class FakeKnowledge:
+    """模拟 KnowledgeProvider。"""
 
-    def __init__(self, hits: list[KBHit] | None = None, error: Exception | None = None):
+    name = "fake"
+
+    def __init__(
+        self,
+        hits: list[KBHit] | None = None,
+        error: Exception | None = None,
+        degraded: list[str] | None = None,
+    ):
         self._hits = hits or []
         self._error = error
+        self._degraded = degraded or []
         self.calls: list[tuple[list[str], str]] = []
 
-    async def hit(self, kb_ids: list[str], question: str, retries: int = 1) -> list[KBHit]:
-        self.calls.append((kb_ids, question))
+    async def search(self, kb_ids, query, *, top_k=None) -> KBSearchResult:
+        self.calls.append((kb_ids, query))
         if self._error:
             raise self._error
-        return self._hits
+        return KBSearchResult(hits=self._hits, degraded=self._degraded)
+
+    async def list_kbs(self):
+        return []
 
 
 class FakeModel:
@@ -122,8 +138,8 @@ class FakeModelProvider:
 
 
 class FakeDeps:
-    def __init__(self, kb_client=None, model_provider=None):
-        self.kb_client = kb_client
+    def __init__(self, knowledge=None, model_provider=None):
+        self.knowledge = knowledge
         self.model_provider = model_provider
 
 
@@ -185,27 +201,27 @@ class TestSentenceSplitting:
         assert "设备参数" in result[0]
 
 
-# ── 外部知识库客户端 ──────────────────────────────────────
+# ── 万悟知识库后端 ────────────────────────────────────────
 
 
-class TestKnowledgeHitClient:
-    """万悟 hit 接口客户端测试。"""
+class TestWanwuProvider:
+    """万悟 hit 接口后端测试。"""
 
-    def make_client(self, responses: list) -> tuple[KnowledgeHitClient, FakeHTTPClient]:
+    def make_client(self, responses: list) -> tuple[WanwuProvider, FakeHTTPClient]:
         http = FakeHTTPClient(responses)
         # 显式传入所有断言涉及的字段，避免依赖本机 .env / 环境变量
-        settings = Settings(
-            kb_api_base_url="http://kb.example.com",
-            kb_api_key="test-key",
-            kb_match_type="mix",
-            kb_top_k=5,
-            kb_threshold=0.4,
+        config = WanwuKnowledgeConfig(
+            base_url="http://kb.example.com",
+            api_key="test-key",
+            match_type="mix",
+            top_k=5,
+            threshold=0.4,
         )
-        return KnowledgeHitClient(http, settings), http
+        return WanwuProvider(http, config), http
 
     async def test_hit_builds_correct_request(self):
         client, http = self.make_client([FakeResponse(make_hit_response([]))])
-        await client.hit(["kb1", "kb2"], "测试句子")
+        await client.search(["kb1", "kb2"], "测试句子")
 
         req = http.requests[0]
         assert req["url"] == "http://kb.example.com/service/api/openapi/v1/knowledge/hit"
@@ -222,7 +238,7 @@ class TestKnowledgeHitClient:
             ("2003716670903816193", "开票信息.docx", "公司名称：xxx", 0.6106349229812622),
         ])
         client, _ = self.make_client([FakeResponse(resp)])
-        hits = await client.hit(["kb1"], "开票信息")
+        hits = (await client.search(["kb1"], "开票信息")).hits
 
         assert len(hits) == 1
         # 单库请求：kb_id 取请求的知识库 id，而非响应的 knowledgeName
@@ -238,7 +254,7 @@ class TestKnowledgeHitClient:
             ("unknown", "b.docx", "内容B", 0.8),   # 无法对应 → 回退 knowledgeName
         ])
         client, _ = self.make_client([FakeResponse(resp)])
-        hits = await client.hit(["kb1", "kb2"], "测试")
+        hits = (await client.search(["kb1", "kb2"], "测试")).hits
         assert hits[0].kb_id == "kb2"
         assert hits[1].kb_id == "unknown"
 
@@ -250,45 +266,45 @@ class TestKnowledgeHitClient:
             ("kn", "mid.docx", "中相关", 0.55),
         ])
         client, _ = self.make_client([FakeResponse(resp)])
-        hits = await client.hit(["kb1"], "测试")
+        hits = (await client.search(["kb1"], "测试")).hits
         assert [h.kb_file for h in hits] == ["high.docx", "mid.docx", "low.docx"]
         assert hits[0].relevance == 0.91
 
     async def test_hit_empty_result(self):
         client, _ = self.make_client([FakeResponse(make_hit_response([]))])
-        hits = await client.hit(["kb1"], "无关内容")
+        hits = (await client.search(["kb1"], "无关内容")).hits
         assert hits == []
 
     async def test_hit_business_error_no_retry(self):
         """业务错误（code != 0，如无效 kb_id）不可重试，1 次请求即抛。"""
         err = FakeResponse({"code": 500, "msg": "无效的知识库", "data": None})
         client, http = self.make_client([err, err])
-        with pytest.raises(RuntimeError, match="知识库接口返回错误"):
-            await client.hit(["kb1"], "测试")
+        with pytest.raises(KnowledgeConfigError, match="知识库接口返回错误"):
+            await client.search(["kb1"], "测试")
         assert len(http.requests) == 1  # 不重试
 
     async def test_hit_4xx_no_retry(self):
         """HTTP 4xx（鉴权失败等）不可重试，1 次请求即抛。"""
         err = FakeResponse({"msg": "unauthorized"}, status_code=401)
         client, http = self.make_client([err, err])
-        with pytest.raises(RuntimeError, match="请求被拒绝"):
-            await client.hit(["kb1"], "测试")
+        with pytest.raises(KnowledgeConfigError, match="请求被拒绝"):
+            await client.search(["kb1"], "测试")
         assert len(http.requests) == 1  # 不重试
 
     async def test_hit_5xx_retries(self):
         """HTTP 5xx 可重试，重试后仍失败则抛出。"""
         err = FakeResponse({"msg": "gateway error"}, status_code=502)
         client, http = self.make_client([err, err])
-        with pytest.raises(RuntimeError, match="知识库检索失败"):
-            await client.hit(["kb1"], "测试")
+        with pytest.raises(KnowledgeUnavailable, match="知识库检索失败"):
+            await client.search(["kb1"], "测试")
         assert len(http.requests) == 2  # 重试了 1 次
 
     async def test_hit_3xx_retries_with_status_in_error(self):
         """HTTP 3xx（重定向，通常是 base_url 配置错误）可重试，错误信息保留状态码。"""
         err = FakeResponse({}, status_code=302)
         client, http = self.make_client([err, err])
-        with pytest.raises(RuntimeError, match="HTTP 302"):
-            await client.hit(["kb1"], "测试")
+        with pytest.raises(KnowledgeUnavailable, match="HTTP 302"):
+            await client.search(["kb1"], "测试")
         assert len(http.requests) == 2
 
     async def test_hit_non_dict_json_retries(self):
@@ -296,14 +312,14 @@ class TestKnowledgeHitClient:
         bad = FakeResponse("upstream timeout")  # .json() 返回字符串
         ok = FakeResponse(make_hit_response([("kn", "f.md", "内容", 0.9)]))
         client, http = self.make_client([bad, ok])
-        hits = await client.hit(["kb1"], "测试")
+        hits = (await client.search(["kb1"], "测试")).hits
         assert len(hits) == 1
         assert len(http.requests) == 2
 
     async def test_hit_retry_succeeds_on_second_attempt(self):
         ok = FakeResponse(make_hit_response([("kn", "f.md", "内容", 0.9)]))
         client, http = self.make_client([ConnectionError("网络错误"), ok])
-        hits = await client.hit(["kb1"], "测试")
+        hits = (await client.search(["kb1"], "测试")).hits
         assert len(hits) == 1
         assert len(http.requests) == 2
 
@@ -326,11 +342,11 @@ class TestSkillDepsInjection:
         old = injected._deps
         try:
             injected._deps = FakeDeps(
-                kb_client=FakeKBClient(hits=[]), model_provider=FakeModelProvider()
+                knowledge=FakeKnowledge(hits=[]), model_provider=FakeModelProvider()
             )
             out = json.loads(await injected._run_review(sample_txt_file, "kb1"))
             assert out["summary"]["total_sentences"] == 3
-            assert out["summary"]["errors"] == 0  # deps 生效，未走 kb_client 缺失分支
+            assert out["summary"]["errors"] == 0  # deps 生效，未走知识库后端缺失分支
         finally:
             injected._deps = old
 
@@ -352,7 +368,7 @@ class TestReviewTools:
     """审阅工具函数测试。"""
 
     async def test_search_knowledge_bases(self):
-        fake = FakeKBClient(hits=[KBHit(kb_id="k1", kb_file="a.docx", content="条文内容", relevance=0.85)])
+        fake = FakeKnowledge(hits=[KBHit(kb_id="k1", kb_file="a.docx", content="条文内容", relevance=0.85)])
         results = await search_knowledge_bases(["k1"], "测试句子", fake)
         assert results == [{"kb_id": "k1", "kb_file": "a.docx", "content": "条文内容", "relevance": 0.85}]
         assert fake.calls == [(["k1"], "测试句子")]
@@ -377,13 +393,13 @@ class TestReviewPipeline:
 
     def test_pipeline_builds(self):
         """流水线应能正常构建。"""
-        pipeline = ReviewPipeline(FakeDeps(kb_client=FakeKBClient()))
+        pipeline = ReviewPipeline(FakeDeps(knowledge=FakeKnowledge()))
         graph = pipeline.build()
         assert graph is not None
 
     async def test_run_pipeline_no_hits(self, sample_txt_file):
         """检索无结果 → 全部判无问题。"""
-        deps = FakeDeps(kb_client=FakeKBClient(hits=[]), model_provider=FakeModelProvider())
+        deps = FakeDeps(knowledge=FakeKnowledge(hits=[]), model_provider=FakeModelProvider())
         result = await run_review_pipeline(sample_txt_file, ["kb1"], deps, task_id=7)
 
         assert result["summary"]["total_sentences"] == 3
@@ -398,7 +414,7 @@ class TestReviewPipeline:
             '{"has_issue": "是", "error_reason": "使用绝对化用语", "suggestion": "改为相对表述", '
             '"reference": {"kb_id": "kb1", "kb_file": "规范.docx", "content": "禁止使用绝对化用语"}}'
         )
-        deps = FakeDeps(kb_client=FakeKBClient(hits=hits), model_provider=FakeModelProvider(llm_response))
+        deps = FakeDeps(knowledge=FakeKnowledge(hits=hits), model_provider=FakeModelProvider(llm_response))
         result = await run_review_pipeline(sample_txt_file, ["kb1"], deps)
 
         assert result["summary"]["issues_found"] == 3
@@ -409,7 +425,7 @@ class TestReviewPipeline:
     async def test_run_pipeline_kb_error_marks_error(self, sample_txt_file):
         """检索失败（重试后）→ 该句标记 error，任务不中断。"""
         deps = FakeDeps(
-            kb_client=FakeKBClient(error=RuntimeError("平台不可用")),
+            knowledge=FakeKnowledge(error=RuntimeError("平台不可用")),
             model_provider=FakeModelProvider(),
         )
         result = await run_review_pipeline(sample_txt_file, ["kb1"], deps)
@@ -419,9 +435,9 @@ class TestReviewPipeline:
         assert all(r["error"] for r in result["results"])
         assert all(r["has_issue"] == "否" for r in result["results"])
 
-    async def test_run_pipeline_no_kb_client(self, sample_txt_file):
-        """kb_client 未初始化 → 全部标记 error。"""
-        deps = FakeDeps(kb_client=None, model_provider=FakeModelProvider())
+    async def test_run_pipeline_no_knowledge_provider(self, sample_txt_file):
+        """知识库后端未初始化 → 全部标记 error。"""
+        deps = FakeDeps(knowledge=None, model_provider=FakeModelProvider())
         result = await run_review_pipeline(sample_txt_file, ["kb1"], deps)
         assert result["summary"]["errors"] == 3
 

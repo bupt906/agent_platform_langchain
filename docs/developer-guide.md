@@ -32,7 +32,13 @@ src/agent_platform/
 │   ├── file_tools.py         ← 文件读写
 │   ├── runtime_tools.py      ← Workspace / Sandbox / Artifact 工具
 │   ├── data_tools.py         ← 数据加载（load_data）
+│   ├── knowledge_tools.py    ← 企业知识库检索与写入
 │   └── registry.py           ← 全局工具注册表
+│
+├── knowledge/            ← 知识库能力：统一接口 + 可切换后端
+│   ├── provider.py           ← KnowledgeProvider 抽象接口
+│   ├── providers/            ← 万悟平台 / 知识库中台 / 双跑比对
+│   └── factory.py            ← 按 KNOWLEDGE_PROVIDER 选择后端
 │
 ├── runtime/              ← 可执行 Skill 的安全基础设施
 │   ├── manager.py            ← Runtime Profile 注册与执行上下文
@@ -154,6 +160,13 @@ Agent: "校验图的质量"       → bash("python scripts/validate_graph.py ...
 | 读取文件 | `execute_python`（pandas、re） | ❌ → 需要新工具 |
 | 书写文件 | `execute_python`（python-docx） | ❌ → 需要新工具 |
 | 运行代码 | `execute_python` （部分）| ❌ → 需要新工具 |
+| 查企业知识库 | `search_knowledge` 等五个工具 | ✅ 直接声明即可 |
+
+**要用知识库不需要写任何代码。** 五个工具已注册在全局工具池里：`search_knowledge`
+（检索原文证据）、`answer_from_knowledge`（直接作答）、`list_knowledge_bases`（列出知识库）、
+`fetch_knowledge_document`（取全文）、`add_to_knowledge_base`（写入）。
+在 `SKILL.md` 的 `tools` 里写名字就能用，背后是万悟平台还是知识库中台由配置决定，
+你的 Skill 不受影响。详见 [知识库接入指南](知识库接入指南.md)。
 
 如果只需要文本文件、受限数据处理和已审查的仓库脚本，使用现有工具并只写 `SKILL.md` 即可。
 
@@ -476,6 +489,7 @@ SKILL.md frontmatter 中的 runtime 与 Runtime 工具
 - [ ] SKILL.md 的 `name` 唯一且用英文
 - [ ] `description` 清楚地写了"什么时候用这个 Skill"
 - [ ] `tools` 声明了所有需要的工具
+- [ ] 用到知识库时，正文说明了「检索失败」与「知识库里没有」要区别对待
 - [ ] 模型生成代码或第三方 CLI 使用独立 Runtime Profile，而非全局 `bash`
 - [ ] Runtime 镜像固定版本，命令、网络和资源策略采用最小权限
 - [ ] 输出通过 `publish_artifact` 发布，不暴露本地路径

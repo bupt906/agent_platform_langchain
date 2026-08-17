@@ -65,33 +65,35 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     expired_artifacts = runtime_manager.artifact_store.cleanup_expired()
     if expired_artifacts:
         logger.info("已清理 %d 个过期或无效 Skill 产物", expired_artifacts)
-    register_all_declarative_tools()
-    registered_tools = tool_map()
-
-    def validate_declarative_skill(declarative_skill) -> None:
-        runtime_manager.validate_profile(declarative_skill.runtime_profile)
-        bound_tools = resolve_skill_tools(declarative_skill, registered_tools)
-        logger.info(
-            "声明式 Skill '%s' 工具绑定就绪: %s",
-            declarative_skill.name,
-            ", ".join(tool.name for tool in bound_tools) or "无",
-        )
-
-    declarative_registry = DeclarativeSkillRegistry(validator=validate_declarative_skill)
-    if declarative_registry.unavailable_skills:
-        logger.warning(
-            "已隔离 %d 个配置无效的声明式 Skill: %s",
-            len(declarative_registry.unavailable_skills),
-            ", ".join(declarative_registry.unavailable_skills),
-        )
-    logger.info("声明式 Skills 加载完成，共 %d 个", declarative_registry.count)
 
     async with httpx.AsyncClient(proxy=None) as http_client:
-        # ── 外部知识库客户端（万悟平台 hit 检索接口）──
-        from agent_platform.agents.document_review.knowledge_bases.client import KnowledgeHitClient
+        # ── 知识库后端 ──
+        # 必须先于工具注册构造：知识库工具在注册时就要绑定 provider，顺序反了会让
+        # 声明式 Skill 在启动校验阶段因「工具未注册」被隔离。
+        from agent_platform.knowledge import build_provider
 
-        kb_client = KnowledgeHitClient(http_client, settings)
-        logger.info("外部知识库客户端初始化完成: %s", settings.kb_api_base_url)
+        knowledge = build_provider(http_client, settings)
+
+        register_all_declarative_tools(knowledge=knowledge)
+        registered_tools = tool_map()
+
+        def validate_declarative_skill(declarative_skill) -> None:
+            runtime_manager.validate_profile(declarative_skill.runtime_profile)
+            bound_tools = resolve_skill_tools(declarative_skill, registered_tools)
+            logger.info(
+                "声明式 Skill '%s' 工具绑定就绪: %s",
+                declarative_skill.name,
+                ", ".join(tool.name for tool in bound_tools) or "无",
+            )
+
+        declarative_registry = DeclarativeSkillRegistry(validator=validate_declarative_skill)
+        if declarative_registry.unavailable_skills:
+            logger.warning(
+                "已隔离 %d 个配置无效的声明式 Skill: %s",
+                len(declarative_registry.unavailable_skills),
+                ", ".join(declarative_registry.unavailable_skills),
+            )
+        logger.info("声明式 Skills 加载完成，共 %d 个", declarative_registry.count)
 
         deps = PlatformDeps(
             model_provider=model_provider,
@@ -106,13 +108,13 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
             declarative_registry=declarative_registry,
             runtime_manager=runtime_manager,
             artifact_store=runtime_manager.artifact_store,
-            kb_client=kb_client,
+            knowledge=knowledge,
         )
         deps._callback_base = settings.callback_base_url
         app.state.deps = deps
         app.state.settings = settings
 
-        # 注入 document_review 技能依赖（聊天路径的 review_document 工具需要 kb_client）
+        # 注入 document_review 技能依赖（聊天路径的 review_document 工具需要知识库后端）
         from agent_platform.agents.document_review import skill as document_review_skill
 
         document_review_skill.set_deps(deps)

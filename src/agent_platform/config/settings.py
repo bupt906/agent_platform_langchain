@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from pydantic import Field
+from pydantic import AliasChoices, Field
 from pydantic_settings import BaseSettings
 
 
@@ -19,6 +19,54 @@ class ModelConfig(BaseSettings):
     ollama_base_url: str = "http://localhost:11434/v1"
 
     model_config = {"env_file": ".env", "extra": "ignore"}
+
+
+class WanwuKnowledgeConfig(BaseSettings):
+    """万悟平台 hit 接口的连接与检索参数。
+
+    这些字段全部是万悟专有的，不该出现在 Settings 顶层——顶层只保留跨后端通用的选择项，
+    否则每接一个新后端都会往全局配置里堆一批别的后端用不上的字段。
+    """
+
+    base_url: str = Field(
+        default="http://localhost:8081",
+        validation_alias=AliasChoices("KB_API_BASE_URL", "KB_BASE_URL"),
+    )
+    api_key: str = ""  # Bearer API Key
+    match_type: str = "mix"  # 检索模式：vector / text / mix
+    rerank_model_id: str = ""  # 重排序模型 UUID（mix 模式可选）
+    priority_match: int = 0  # 权重匹配开关（mix 模式）：0=关闭 1=开启
+    semantics_priority: float = 0.2  # 语义权重（priority_match=1 时生效）
+    keyword_priority: float = 0.8  # 关键词权重（priority_match=1 时生效）
+    top_k: int = 5  # 返回结果数量
+    threshold: float = 0.4  # 相似度过滤阈值
+    use_graph: bool = False  # 是否使用知识图谱
+    request_timeout: float = 30.0  # hit 接口请求超时（秒）
+    retries: int = 1  # 可重试错误的重试次数
+
+    # populate_by_name 让 base_url 既能由 KB_API_BASE_URL 环境变量注入，
+    # 也能在测试和程序里按字段名直接构造；否则 validation_alias 会顶掉字段名。
+    model_config = {
+        "env_file": ".env",
+        "extra": "ignore",
+        "env_prefix": "KB_",
+        "populate_by_name": True,
+    }
+
+
+class OmniMindKnowledgeConfig(BaseSettings):
+    """知识库中台（万象智库 OmniMind）服务契约层的连接参数。"""
+
+    base_url: str = "http://localhost:8000"  # 知识库中台地址
+    api_key: str = ""  # 服务密钥，对应中台的 SERVICE_API_KEY
+    top_k: int = 5  # 默认返回的证据条数
+    request_timeout: float = 30.0
+    retries: int = 2
+    # 旧知识库 ID → 中台 UUID 的映射，格式 "旧id:新id,旧id2:新id2"。
+    # 迁移期用来让沿用旧 ID 的外部调用方（如审阅任务）不必同步改造。
+    kb_id_map: str = ""
+
+    model_config = {"env_file": ".env", "extra": "ignore", "env_prefix": "OMNIMIND_"}
 
 
 class Settings(BaseSettings):
@@ -100,20 +148,16 @@ class Settings(BaseSettings):
     callback_base_url: str = ""  # 审阅结果回调地址（为空则不发送回调）
     callback_auth_token: str = ""  # 回调时携带的 X-Auth-Token
 
-    # ── 外部知识库（万悟平台 hit 检索接口）──
-    kb_api_base_url: str = "http://localhost:8081"  # 知识库平台地址
-    kb_api_key: str = ""  # Bearer API Key
-    kb_match_type: str = "mix"  # 检索模式：vector / text / mix
-    kb_rerank_model_id: str = ""  # 重排序模型 UUID（mix 模式可选）
-    kb_priority_match: int = 0  # 权重匹配开关（mix 模式）：0=关闭 1=开启
-    kb_semantics_priority: float = 0.2  # 语义权重（priority_match=1 时生效）
-    kb_keyword_priority: float = 0.8  # 关键词权重（priority_match=1 时生效）
-    kb_top_k: int = 5  # 返回结果数量
-    kb_threshold: float = 0.4  # 相似度过滤阈值
-    kb_use_graph: bool = False  # 是否使用知识图谱
-    kb_request_timeout: float = 30.0  # hit 接口请求超时（秒）
+    # ── 知识库后端 ──
+    # 选择哪个后端提供知识库能力。切换只改这一项，调用方（Agent / Skill / 审阅流水线）不变。
+    #   wanwu    — 万悟平台 hit 接口（迁移前的既有后端）
+    #   omnimind — 知识库中台的 /api/v1/service 契约层
+    #   dual     — 两边都查，用 omnimind 的结果，把差异写入日志供迁移期比对
+    knowledge_provider: str = "wanwu"
 
     models: ModelConfig = Field(default_factory=ModelConfig)
+    wanwu: WanwuKnowledgeConfig = Field(default_factory=WanwuKnowledgeConfig)
+    omnimind: OmniMindKnowledgeConfig = Field(default_factory=OmniMindKnowledgeConfig)
 
     model_config = {"env_file": ".env", "extra": "ignore"}
 

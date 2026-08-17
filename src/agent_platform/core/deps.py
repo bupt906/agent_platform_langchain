@@ -10,9 +10,9 @@ from agent_platform.core.registry import SkillRegistry
 from agent_platform.models.provider import ModelProvider
 
 if TYPE_CHECKING:
-    from agent_platform.agents.document_review.knowledge_bases.client import KnowledgeHitClient
     from agent_platform.audit.store import AuditStore
     from agent_platform.hitl.store import ApprovalStore
+    from agent_platform.knowledge import KnowledgeProvider
     from agent_platform.memory.session_store import SessionStore
     from agent_platform.memory.summarizer import ConversationSummarizer
     from agent_platform.memory.user_profile import UserProfileStore
@@ -56,4 +56,5 @@ class PlatformDeps:
     approval_store: ApprovalStore | None = None
 
     # ── 知识库 ──
-    kb_client: KnowledgeHitClient | None = None
+    # 具体后端由 settings.knowledge_provider 决定，调用方只依赖接口。
+    knowledge: KnowledgeProvider | None = None

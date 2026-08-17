@@ -1,7 +1,8 @@
 """文档审阅工具函数。
 
 提供文档解析、句子切分、知识库检索等核心能力。
-知识库检索通过外部万悟平台 hit 接口完成（见 knowledge_bases/client.py）。
+知识库检索走平台统一的 KnowledgeProvider 接口，具体后端由配置决定
+（见 agent_platform/knowledge/）。
 """
 
 from __future__ import annotations
@@ -11,7 +12,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
-    from agent_platform.agents.document_review.knowledge_bases.client import KnowledgeHitClient
+    from agent_platform.knowledge import KnowledgeProvider
 
 # ── 句子切分正则 ──────────────────────────────────────────
 
@@ -154,31 +155,23 @@ def split_sentences(text: str) -> list[str]:
 async def search_knowledge_bases(
     kb_ids: list[str],
     sentence: str,
-    kb_client: KnowledgeHitClient,
+    knowledge: KnowledgeProvider,
 ) -> list[dict]:
-    """调用外部知识库 hit 接口，查找与句子最相关的条文。
+    """检索知识库，查找与句子最相关的条文。
 
-    检索参数（matchType / topK / threshold 等）由 settings 统一配置，
-    失败重试由 client 内部处理，重试后仍失败则向上抛出异常。
+    检索参数由所选后端的配置决定，失败重试由 provider 内部处理，重试后仍失败则
+    向上抛出异常——调用方据此把该句标记为检索失败，而不是当作「无问题」。
 
     Args:
         kb_ids: 知识库 ID 列表
         sentence: 待审查句子
-        kb_client: 外部知识库客户端
+        knowledge: 知识库后端
 
     Returns:
         [{"kb_id": "...", "kb_file": "...", "content": "...", "relevance": 0.8}, ...]
     """
-    hits = await kb_client.hit(kb_ids, sentence)
-    return [
-        {
-            "kb_id": h.kb_id,
-            "kb_file": h.kb_file,
-            "content": h.content,
-            "relevance": h.relevance,
-        }
-        for h in hits
-    ]
+    result = await knowledge.search(kb_ids, sentence)
+    return [hit.as_dict() for hit in result.hits]
 
 
 def format_kb_results_for_prompt(results: list[dict]) -> str:

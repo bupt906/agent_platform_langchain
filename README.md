@@ -171,6 +171,75 @@ curl -X PUT http://localhost:8000/preferences/demo-user \
 
 开发环境中 API 基础地址留空即可使用 Vite 代理；独立部署前端时可填写后端地址。
 
+## 知识库能力
+
+知识库是平台的公共能力，注册在全局工具表里，**任何 Agent 或 Skill 都可以直接使用**，
+不需要自己写客户端，也不需要知道后端是谁。
+
+> 开发新智能体时如何调用知识库，见 **[知识库接入指南](docs/知识库接入指南.md)**——
+> 含三种接入方式的完整示例、prompt 写法与迁移 runbook。
+
+| 工具 | 用途 |
+| --- | --- |
+| `search_knowledge` | 检索知识库，返回原文证据片段 |
+| `answer_from_knowledge` | 让知识库直接作答并给出来源 |
+| `list_knowledge_bases` | 列出可检索的知识库，供 Agent 选择范围 |
+| `fetch_knowledge_document` | 按原文顺序取回某文档全文 |
+| `add_to_knowledge_base` | 把文本写入知识库（有副作用） |
+
+声明式 Skill 在 `SKILL.md` 的 frontmatter 里声明即可绑定：
+
+```yaml
+---
+name: my-skill
+description: ...
+tools: [search_knowledge, read_file, write_file]
+---
+```
+
+Python Agent 从工具注册表取用：
+
+```python
+from agent_platform.tools import registry
+
+tools = registry.get_many(["search_knowledge", "list_knowledge_bases"])
+```
+
+需要直接持有后端时（例如自定义流水线），用 `deps.knowledge`，它是
+`KnowledgeProvider` 接口而不是某个具体实现。
+
+### 后端与切换
+
+`KNOWLEDGE_PROVIDER` 决定由谁提供知识库能力，调用方代码不受影响：
+
+| 取值 | 后端 | 说明 |
+| --- | --- | --- |
+| `wanwu` | 万悟平台 hit 接口 | 默认值，配置见 `KB_*` |
+| `omnimind` | 知识库中台服务契约层 | 配置见 `OMNIMIND_*`，需安装 `kb-sdk` |
+| `dual` | 两者并行 | 返回 `omnimind` 的结果，把与 `wanwu` 的差异写入日志，供迁移期比对 |
+
+不同后端能力有差异：`wanwu` 只支持检索，服务端问答、取全文、写入知识库需要 `omnimind`。
+工具会如实说明「后端不支持」，不会编造结果。
+
+切到知识库中台的完整步骤（含前置条件、双跑观察与回退）见
+[知识库接入指南 · 迁移到知识库中台](docs/知识库接入指南.md#迁移到知识库中台)。概要：
+
+```bash
+pip install -e ".[omnimind]"      # kb-sdk 由知识库中台仓库的 sdk/ 构建
+# .env 中设置 OMNIMIND_BASE_URL 与 OMNIMIND_API_KEY（对应中台的 SERVICE_API_KEY）
+# 把 KNOWLEDGE_PROVIDER 改为 dual 观察一段时间，再改为 omnimind
+```
+
+如果外部系统仍在使用旧平台的知识库 ID（例如审阅任务的下发方），用
+`OMNIMIND_KB_ID_MAP=旧id:新UUID,旧id2:新UUID2` 做迁移期映射。未配置映射的旧格式 ID 会被
+明确拒绝，而不是发到中台换回一个语焉不详的 403。
+
+### 检索失败与「没有找到」是两回事
+
+工具在检索失败时返回明确的错误文本，绝不返回「未检索到相关内容」。后端部分不可用时
+（例如向量检索挂了但字面检索还在），结果会带上降级说明。这一点在文档审阅里尤其重要：
+把「没查成」当成「无问题」会直接产出错误结论。
+
 ## 系统结构
 
 ```text
@@ -178,11 +247,14 @@ frontend/                     React + Vite 工作台
 src/agent_platform/
 ├── api/                      FastAPI、SSE、审阅/偏好/审计等接口
 ├── agents/                   Python Agent（当前包含文档审阅）
+├── config/                   配置与后端选择
+├── prompts/                  分层 Prompt 构建与模板
 ├── skills/                   声明式 Skill（当前包含知识图谱抽取与 CAD）
 ├── runtime/                  Skill Workspace、Runtime Profile、Sandbox 与 Artifact
 ├── core/                     注册中心、意图路由与依赖容器
 ├── graph/                    多 Agent 编排
 ├── models/                   DeepSeek、Qwen、OpenAI、Ollama 适配
+├── knowledge/                知识库能力：统一接口 + 可切换后端（万悟 / 知识库中台）
 ├── memory/                   会话、摘要与用户画像持久化
 ├── audit/                    审计记录与统计
 ├── hitl/                     Human-in-the-Loop 审批
@@ -190,7 +262,7 @@ src/agent_platform/
 └── mcp_servers/              MCP Server 注册与动态加载
 tests/                        后端测试
 docker/                       Skill Runtime 镜像定义
-docs/                         开发指南与专项部署说明
+docs/                         开发指南、知识库接入指南与专项部署说明
 ```
 
 一次对话的主要流程：
@@ -213,7 +285,9 @@ docs/                         开发指南与专项部署说明
 | `MEMORY_DB_PATH` / `AUDIT_DB_PATH` | 会话偏好与审计 SQLite 文件位置 |
 | `API_KEY` | API 鉴权密钥；留空则不启用鉴权 |
 | `RATE_LIMIT_PER_MINUTE` | 每个 IP 每分钟的最大请求数，`0` 为不限流 |
-| `KB_API_BASE_URL` / `KB_API_KEY` | 外部知识库服务地址与凭据 |
+| `KNOWLEDGE_PROVIDER` | 知识库后端：`wanwu` / `omnimind` / `dual` |
+| `KB_API_BASE_URL` / `KB_API_KEY` | 万悟平台知识库地址与凭据（`wanwu` 后端）|
+| `OMNIMIND_BASE_URL` / `OMNIMIND_API_KEY` | 知识库中台地址与服务密钥（`omnimind` 后端）|
 | `CALLBACK_BASE_URL` / `CALLBACK_AUTH_TOKEN` | 文档审阅任务的回调地址与鉴权信息 |
 | `SKILL_WORKSPACE_ROOT` / `SKILL_ARTIFACT_ROOT` | 隔离工作区与已发布产物根目录 |
 | `SKILL_SANDBOX_ENGINE` | Skill 容器运行时，默认 `docker` |
